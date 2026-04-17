@@ -30,10 +30,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cli = [
+    "questionary>=2.0.0",
+    "rich>=13.7.0",
+    "dnspython>=2.4.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "ruff>=0.5.0",
+    "questionary>=2.0.0",
+    "rich>=13.7.0",
+    "dnspython>=2.4.0",
 ]
 
 [project.scripts]

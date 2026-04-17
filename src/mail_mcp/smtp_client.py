@@ -80,6 +80,26 @@ def build_message(
     return msg
 
 
+def test_login(account: AccountModel, password: str, *, timeout: float = 15.0) -> None:
+    """Authenticate against the account's SMTP server and close the session.
+
+    Used by the interactive wizard to verify the user's credentials before
+    saving them. Raises the underlying :mod:`smtplib` exception on failure.
+    """
+    ctx = ssl.create_default_context()
+    if account.smtp_starttls:
+        with smtplib.SMTP(account.smtp_host, account.smtp_port, timeout=timeout) as server:
+            server.ehlo()
+            server.starttls(context=ctx)
+            server.ehlo()
+            server.login(account.email, password)
+    else:
+        with smtplib.SMTP_SSL(
+            account.smtp_host, account.smtp_port, context=ctx, timeout=timeout
+        ) as server:
+            server.login(account.email, password)
+
+
 def send(account: AccountModel, password: str, msg: EmailMessage) -> str:
     """Deliver ``msg`` via SMTP, enforcing TLS.
 

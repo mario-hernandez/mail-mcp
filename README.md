@@ -68,17 +68,23 @@ A full step-by-step integration guide (including Claude Desktop / Claude Code / 
 
 ## Setup
 
+### The quick path — interactive wizard
+
 ```bash
-# 1. Add an account. The password is read interactively and stored in the
-#    OS keyring under service "mail-mcp:<alias>".
+pip install "mail-mcp[cli] @ git+https://github.com/mario-hernandez/mail-mcp.git@main"
+mail-mcp init
+```
+
+`mail-mcp init` asks for your email address, auto-detects the IMAP and SMTP endpoints for your provider (Gmail, iCloud, Outlook.com, Fastmail, Yahoo, IONOS, GMX, Zoho, mailbox.org, Yandex, custom domains hosted on Google Workspace / Microsoft 365, and others), prompts for your password, tests the login live against both servers, and saves the account to the OS keyring. No flags to remember.
+
+### The scripted path
+
+```bash
 mail-mcp add-account personal m@example.com \
   --imap-host imap.example.com --imap-port 993 \
   --smtp-host smtp.example.com --smtp-port 587
 
-# 2. Verify keyring access
 mail-mcp check --alias personal
-
-# 3. Run the MCP server (usually your AI client does this for you)
 mail-mcp serve
 ```
 

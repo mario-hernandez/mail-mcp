@@ -18,6 +18,16 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_init(_args: argparse.Namespace) -> int:
+    from .wizard import WizardError, run
+
+    try:
+        return run()
+    except WizardError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
 def _cmd_add_account(args: argparse.Namespace) -> int:
     cfg = load()
     password = getpass.getpass(prompt=f"Password for {args.email} (hidden): ")
@@ -78,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("serve", help="run the MCP server on stdio").set_defaults(func=_cmd_serve)
+    sub.add_parser(
+        "init",
+        help="interactive setup wizard (requires 'mail-mcp[cli]' extras)",
+    ).set_defaults(func=_cmd_init)
 
     add = sub.add_parser("add-account", help="add or update an account")
     add.add_argument("alias")

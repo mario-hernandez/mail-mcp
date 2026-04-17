@@ -12,6 +12,23 @@ Please email **m@mariohernandez.es** with the subject prefix `[mail-mcp]`. Inclu
 
 Do not file public GitHub issues for security reports. Coordinated disclosure is appreciated; responses usually land within 72 hours.
 
+## Keychain UX on macOS
+
+The first time `mail-mcp` reads a password from your macOS Keychain you will see a standard Apple prompt along the lines of *"python wants to access the mail-mcp:&lt;alias&gt; entry in your keychain"*. Pick **Always Allow** once and future invocations from the same Python interpreter proceed silently. If you reinstall Python (brew, pyenv, a new venv) the interpreter's code signature changes and the prompt returns — this is expected behaviour for every tool that uses `keyring` on macOS.
+
+Items are namespaced under `mail-mcp:<alias>` so they never collide with credentials created by Apple Mail, `git credential-osxkeychain`, or other tools.
+
+## Autoconfig network traffic
+
+`mail-mcp init` may, in this order, perform a handful of HTTPS requests and DNS lookups to auto-detect your provider:
+
+1. HTTPS GET to `autoconfig.<your-domain>/mail/config-v1.1.xml` (if the provider publishes one).
+2. HTTPS GET to `<your-domain>/.well-known/autoconfig/mail/config-v1.1.xml`.
+3. HTTPS GET to `autoconfig.thunderbird.net/v1.1/<your-domain>` — the Mozilla ISPDB. **The domain alone is sent**, never the full email address.
+4. DNS `MX` and `SRV` lookups via your system resolver.
+
+HTTPS is non-negotiable — HTTP URLs are rejected. Every call is capped at three seconds. Skip networking entirely with the wizard's "autodetect failed — enter manually" fallback if you are on an isolated network.
+
 ## Controls
 
 - **Credentials stay in the OS keyring.** macOS Keychain, Linux Secret Service, Windows Credential Manager via [`keyring`](https://pypi.org/project/keyring/). The config file stores only host/port/user/alias.
