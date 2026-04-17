@@ -40,14 +40,22 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 
 | Tool | Type | Mode | What it does |
 |------|:----:|------|--------------|
+| `list_accounts` | ✅ | default | Enumerate configured accounts and the default |
+| `get_account_info` | ✅ | default | Connection config + resolved mailboxes for one account |
 | `list_folders` | ✅ | default | List mailboxes on the account |
+| `get_special_folders` | ✅ | default | Resolve Drafts/Trash/Sent/Junk/Archive via RFC 6154 |
+| `get_quota` | ✅ | default | Storage used / limit, or nulls if unavailable |
 | `search_emails` | ✅ | default | Structured IMAP search (subject/from/to/since/flags/…) |
 | `get_email` | ✅ | default | Fetch a message, body wrapped in XPIA envelope |
+| `get_thread` | ✅ | default | Conversation reconstruction via `THREAD=REFERENCES` |
 | `list_attachments` | ✅ | default | Attachment metadata for a message |
 | `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/` |
-| `save_draft` | ✍️ | default | Build a MIME draft and store it in Drafts (preferred write path) |
+| `list_drafts` | ✅ | default | List the account's Drafts mailbox without guessing its name |
+| `save_draft` | ✍️ | default | Build a MIME draft (supports disk-path attachments) |
 | `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject |
-| `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822`, body never re-read into the LLM |
+| `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822` |
+| `update_draft` | ✍️ | default | Edit a draft in place (APPEND-then-DELETE, preserves Message-ID) |
+| `copy_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Copy without moving (file in two folders) |
 | `move_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Move messages between mailboxes |
 | `mark_emails` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Set/clear Seen and Flagged |
 | `delete_emails` | 🗑️ | `MAIL_MCP_WRITE_ENABLED=true` | Move to Trash by default; permanent delete double-gated |
@@ -55,6 +63,7 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `rename_folder` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Rename a folder, refuses collisions |
 | `delete_folder` | 🗑️ | `MAIL_MCP_WRITE_ENABLED=true` | Delete a folder; non-empty requires `confirm=true` |
 | `send_email` | 🚀 | `MAIL_MCP_WRITE_ENABLED=true` + `MAIL_MCP_SEND_ENABLED=true` + `confirm=true` | Send via SMTP (rate-limited per account) |
+| `send_draft` | 🚀 | same as `send_email` | Send an existing draft and remove it from Drafts |
 
 When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the write tools **are not visible to the model at all** — it cannot enumerate them, let alone call them.
 
@@ -169,7 +178,8 @@ failures and their fixes.
 | `MAIL_MCP_WRITE_ENABLED` | `false` | Register `move_email`, `mark_emails`, `delete_emails`. |
 | `MAIL_MCP_SEND_ENABLED` | `false` | Register `send_email` (additionally requires write). |
 | `MAIL_MCP_ALLOW_PERMANENT_DELETE` | `false` | Allow `permanent=true` on `delete_emails`. |
-| `MAIL_MCP_SEND_HOURLY_LIMIT` | `10` | Max `send_email` calls per account alias per hour. |
+| `MAIL_MCP_SEND_HOURLY_LIMIT` | `10` | Max `send_email` / `send_draft` calls per account per hour. |
+| `MAIL_MCP_ATTACHMENT_DIR` | _unset_ | Additional directory to accept as an attachment source. |
 | `MAIL_MCP_LOG_LEVEL` | `WARNING` | Server log level on stderr (`DEBUG` / `INFO` / `WARNING` / `ERROR`). |
 | `MAIL_MCP_IMAP_CONNECT_TIMEOUT` | `15` | IMAP TCP + TLS handshake timeout, seconds. |
 | `MAIL_MCP_IMAP_READ_TIMEOUT` | `30` | IMAP socket read timeout, seconds. |
@@ -205,7 +215,7 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 97 tests covering the safety boundaries
+pytest         # 107 tests covering the safety boundaries
 ruff check src tests
 ```
 

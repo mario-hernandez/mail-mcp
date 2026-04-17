@@ -33,6 +33,16 @@ FWD_PREFIX = "Fwd: "
 MAX_QUOTED_LINES = 400
 
 
+def _attach_files(msg: EmailMessage, resolved_attachments: list) -> None:
+    """Attach pre-validated files (:class:`ResolvedAttachment`) to ``msg``."""
+    for att in resolved_attachments or []:
+        data = att.path.read_bytes()
+        maintype, _, subtype = att.content_type.partition("/")
+        if not subtype:
+            maintype, subtype = "application", "octet-stream"
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=att.filename)
+
+
 def build_message(
     *,
     from_addr: str,
@@ -42,6 +52,7 @@ def build_message(
     cc: list[str] | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
+    attachments: list | None = None,
 ) -> EmailMessage:
     """Assemble a safe RFC 5322 message.
 
@@ -80,6 +91,7 @@ def build_message(
     if references:
         msg["References"] = " ".join(references)
     msg.set_content(body_text)
+    _attach_files(msg, attachments or [])
     return msg
 
 
@@ -93,6 +105,7 @@ def build_message_with_bcc(
     bcc: list[str] | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
+    attachments: list | None = None,
 ) -> tuple[EmailMessage, list[str]]:
     """Assemble a message and return it together with the BCC list.
 
@@ -110,6 +123,7 @@ def build_message_with_bcc(
         cc=cc,
         in_reply_to=in_reply_to,
         references=references,
+        attachments=attachments,
     )
     return msg, list(bcc or [])
 
@@ -123,6 +137,7 @@ def build_reply_message(
     cc: list[str] | None = None,
     reply_all: bool = False,
     include_original_quote: bool = True,
+    attachments: list | None = None,
 ) -> EmailMessage:
     """Assemble a reply whose threading headers match ``original_headers``.
 
@@ -152,6 +167,7 @@ def build_reply_message(
         body_text=body,
         in_reply_to=in_reply_to,
         references=references or None,
+        attachments=attachments,
     )
 
 

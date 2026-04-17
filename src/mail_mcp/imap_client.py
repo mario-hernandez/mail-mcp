@@ -373,6 +373,122 @@ def save_draft(client: IMAPClient, *, account: AccountModel, message_bytes: byte
     return int(client.append(account.drafts_mailbox, message_bytes, flags=[b"\\Draft"]))
 
 
+def copy_uids(
+    client: IMAPClient,
+    *,
+    source: str,
+    destination: str,
+    uids: list[int],
+) -> int:
+    """COPY UIDs to ``destination`` without removing them from ``source``."""
+    validate_mailbox_name(source)
+    validate_mailbox_name(destination)
+    if not uids:
+        return 0
+    if len(uids) > MAX_BATCH_UIDS:
+        raise ValidationError(f"batch too large (max {MAX_BATCH_UIDS} uids)")
+    client.select_folder(source, readonly=False)
+    client.copy(uids, destination)
+    return len(uids)
+
+
+def get_quota(client: IMAPClient, *, folder: str = "INBOX") -> dict[str, int | None]:
+    """Return ``{"used_kb": int, "limit_kb": int | None}`` for the folder's quota root.
+
+    If the server does not advertise QUOTA we return ``{"used_kb": None,
+    "limit_kb": None}`` rather than raising — callers can show "unknown".
+    """
+    validate_mailbox_name(folder)
+    try:
+        roots, _ = client.get_quota_root(folder)
+    except Exception:  # noqa: BLE001 — provider may not implement QUOTA
+        return {"used_kb": None, "limit_kb": None}
+    if not roots:
+        return {"used_kb": None, "limit_kb": None}
+    quotas = client.get_quota(roots[0])
+    storage = next((q for q in quotas if getattr(q, "resource", "") == "STORAGE"), None)
+    if storage is None:
+        return {"used_kb": None, "limit_kb": None}
+    return {"used_kb": int(storage.usage), "limit_kb": int(storage.limit)}
+
+
+def thread_references(
+    client: IMAPClient,
+    *,
+    mailbox: str,
+    since_days: int = 90,
+) -> list[list[int]]:
+    """Return a nested UID list grouped by thread using the THREAD extension.
+
+    Falls back to an empty list when the server lacks ``THREAD=REFERENCES``;
+    the caller handles reconstruction from headers.
+    """
+    validate_mailbox_name(mailbox)
+    caps = client.capabilities()
+    if b"THREAD=REFERENCES" not in caps:
+        return []
+    client.select_folder(mailbox, readonly=True)
+    from datetime import date as _date
+    from datetime import timedelta
+
+    criteria = ["SINCE", _date.today() - timedelta(days=max(1, since_days))]
+    try:
+        tree = client.thread("REFERENCES", "UTF-8", criteria)
+    except Exception:  # noqa: BLE001 — server may reject unsupported charset
+        return []
+    flat: list[list[int]] = []
+
+    def _walk(node: Any) -> list[int]:
+        if isinstance(node, int):
+            return [node]
+        out: list[int] = []
+        for item in node:
+            out.extend(_walk(item))
+        return out
+
+    for group in tree:
+        flat.append(_walk(group))
+    return flat
+
+
+def fetch_headers(
+    client: IMAPClient,
+    *,
+    mailbox: str,
+    uids: list[int],
+) -> list[EmailHeader]:
+    """Fetch ENVELOPE-level headers for the given UIDs, in order."""
+    validate_mailbox_name(mailbox)
+    if not uids:
+        return []
+    client.select_folder(mailbox, readonly=True)
+    fetched = client.fetch(uids, ["ENVELOPE", "FLAGS", "INTERNALDATE"])
+    out: list[EmailHeader] = []
+    for uid in uids:
+        item = fetched.get(uid)
+        if not item:
+            continue
+        env = item.get(b"ENVELOPE")
+        flags = [f.decode(errors="replace") for f in item.get(b"FLAGS", ())]
+        subject_val = _decode(env.subject) if env and env.subject else ""
+        from_val = _format_address(env.from_[0]) if env and env.from_ else ""
+        to_val = [_format_address(a) for a in (env.to or [])] if env else []
+        cc_val = [_format_address(a) for a in (env.cc or [])] if env else []
+        date_val = item.get(b"INTERNALDATE")
+        out.append(
+            EmailHeader(
+                uid=int(uid),
+                subject=subject_val,
+                from_=from_val,
+                to=to_val,
+                cc=cc_val,
+                date=date_val.isoformat() if isinstance(date_val, datetime) else None,
+                flags=flags,
+            )
+        )
+    return out
+
+
 def move_uids(
     client: IMAPClient,
     *,

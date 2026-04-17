@@ -12,12 +12,20 @@ from __future__ import annotations
 from .. import imap_client, smtp_client
 from ..config import Config
 from ..keyring_store import get_password
-from .schemas import ForwardDraftInput, ReplyDraftInput, SaveDraftInput
+from ..safety.attachments import resolve_many
+from .schemas import (
+    ForwardDraftInput,
+    ReplyDraftInput,
+    SaveDraftInput,
+    SendDraftInput,
+    UpdateDraftInput,
+)
 
 
 def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
     acct = cfg.account(params.account)
     password = get_password(acct.alias, acct.email)
+    attachments = resolve_many(params.attachments) if params.attachments else []
     msg = smtp_client.build_message(
         from_addr=acct.email,
         to=params.to,
@@ -26,6 +34,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         body_text=params.body,
         in_reply_to=params.in_reply_to,
         references=params.references,
+        attachments=attachments,
     )
     # BCC is deliberately not persisted on a draft: the user's mail client
     # will re-enter BCC at send time. Drafts with BCC headers break some
@@ -64,6 +73,119 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "in_reply_to": msg.get("In-Reply-To"),
         "subject": msg.get("Subject"),
+    }
+
+
+def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
+    """Replace a draft in place via APPEND-then-DELETE.
+
+    IMAP has no UPDATE. The safe ordering is: build the new message, APPEND
+    it (new UID), only then mark the old UID deleted and expunge. A failure
+    in the APPEND step leaves the original draft untouched; a failure in the
+    delete step leaves a harmless duplicate rather than data loss.
+    """
+    import email as _email
+    import email.policy as _policy
+
+    acct = cfg.account(params.account)
+    password = get_password(acct.alias, acct.email)
+    with imap_client.connect(acct, password) as c:
+        raw, headers = imap_client.fetch_raw_message(
+            c, mailbox=params.mailbox, uid=params.uid,
+        )
+        original = _email.message_from_bytes(raw, policy=_policy.default)
+        if params.to is not None:
+            new_to = params.to
+        else:
+            new_to = [a.strip() for a in original.get("To", "").split(",") if a.strip()]
+        if params.cc is not None:
+            new_cc = params.cc
+        else:
+            extracted_cc = [a.strip() for a in original.get("Cc", "").split(",") if a.strip()]
+            new_cc = extracted_cc or None
+        new_subject = params.subject if params.subject is not None else original.get("Subject", "")
+        if params.body is not None:
+            new_body = params.body
+        else:
+            new_body = original.get_body(preferencelist=("plain",))
+            new_body = new_body.get_content() if new_body else ""
+        in_reply_to = params.in_reply_to if params.in_reply_to is not None else original.get("In-Reply-To")
+        references = params.references if params.references is not None else (
+            original.get("References", "").split() or None
+        )
+        msg = smtp_client.build_message(
+            from_addr=acct.email,
+            to=new_to,
+            cc=new_cc,
+            subject=new_subject,
+            body_text=new_body,
+            in_reply_to=in_reply_to,
+            references=references,
+        )
+        if params.preserve_message_id and original.get("Message-ID"):
+            del msg["Message-ID"]
+            msg["Message-ID"] = original["Message-ID"]
+        new_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        imap_client.delete_uids(
+            c,
+            mailbox=params.mailbox,
+            uids=[params.uid],
+            trash_mailbox=acct.trash_mailbox,
+            permanent=True,
+        )
+    return {
+        "account": acct.alias,
+        "mailbox": params.mailbox,
+        "old_uid": params.uid,
+        "new_uid": int(new_uid),
+        "message_id": msg["Message-ID"],
+    }
+
+
+def send_draft(cfg: Config, params: SendDraftInput) -> dict:
+    """Send an existing draft via SMTP, then remove it from Drafts.
+
+    Gated identically to ``send_email`` — requires both env gates plus
+    ``confirm=true`` and counts against the per-account rate limit.
+    """
+    from .send import SendDisabled, _check_rate_limit, is_enabled
+
+    if not is_enabled():
+        raise SendDisabled(
+            "send_draft is disabled. Set MAIL_MCP_WRITE_ENABLED=true and "
+            "MAIL_MCP_SEND_ENABLED=true in the server environment to enable it."
+        )
+    if not params.confirm:
+        raise SendDisabled("send_draft requires the caller to pass confirm=true.")
+
+    import email as _email
+    import email.policy as _policy
+
+    acct = cfg.account(params.account)
+    _check_rate_limit(acct.alias)
+    password = get_password(acct.alias, acct.email)
+    with imap_client.connect(acct, password) as c:
+        raw, _headers = imap_client.fetch_raw_message(
+            c, mailbox=params.mailbox, uid=params.uid,
+        )
+        msg = _email.message_from_bytes(raw, policy=_policy.default)
+        # Strip any X-* or transport headers the IMAP server added
+        for hdr in ("X-Mozilla-Draft-Info", "X-Mozilla-Keys"):
+            if hdr in msg:
+                del msg[hdr]
+        message_id = smtp_client.send(acct, password, msg)
+        imap_client.delete_uids(
+            c,
+            mailbox=params.mailbox,
+            uids=[params.uid],
+            trash_mailbox=acct.trash_mailbox,
+            permanent=True,
+        )
+    return {
+        "account": acct.alias,
+        "message_id": message_id,
+        "draft_uid": params.uid,
+        "status": "sent",
     }
 
 

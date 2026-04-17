@@ -14,6 +14,7 @@ from .. import imap_client
 from ..config import Config
 from ..keyring_store import get_password
 from .schemas import (
+    CopyEmailInput,
     CreateFolderInput,
     DeleteEmailInput,
     DeleteFolderInput,
@@ -62,6 +63,20 @@ def delete_folder(cfg: Config, params: DeleteFolderInput) -> dict:
         "mailbox": params.mailbox,
         "status": "deleted",
         "messages_lost": removed,
+    }
+
+
+def copy_email(cfg: Config, params: CopyEmailInput) -> dict:
+    acct, password = _auth(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        copied = imap_client.copy_uids(
+            c, source=params.source, destination=params.destination, uids=params.uids,
+        )
+    return {
+        "account": acct.alias,
+        "copied": copied,
+        "source": params.source,
+        "destination": params.destination,
     }
 
 

@@ -85,6 +85,10 @@ class SaveDraftInput(_AccountScoped):
     bcc: list[str] | None = None
     in_reply_to: str | None = None
     references: list[str] | None = None
+    attachments: list[AttachmentSpec] | None = Field(
+        default=None,
+        description="Files to attach from local disk. Each path must resolve under an allowed directory.",
+    )
 
 
 class SendEmailInput(SaveDraftInput):
@@ -92,6 +96,76 @@ class SendEmailInput(SaveDraftInput):
         default=False,
         description="Must be true to actually send. Acts as an explicit guard.",
     )
+
+
+class AttachmentSpec(BaseModel):
+    path: str = Field(
+        min_length=1, max_length=4096,
+        description="Absolute path to the file to attach. Must resolve under an allowed directory.",
+    )
+    filename: str | None = Field(
+        default=None, max_length=255,
+        description="Override the filename shown in the email (defaults to the path's basename).",
+    )
+    content_type: str | None = Field(
+        default=None, max_length=255,
+        description="MIME type override. When omitted it is inferred from the filename.",
+    )
+
+
+class ListAccountsInput(BaseModel):
+    pass
+
+
+class AccountInfoInput(_AccountScoped):
+    pass
+
+
+class SpecialFoldersInput(_AccountScoped):
+    pass
+
+
+class GetQuotaInput(_AccountScoped):
+    folder: str = Field(default="INBOX", max_length=255)
+
+
+class CopyEmailInput(_AccountScoped):
+    source: str = Field(default="INBOX", max_length=255)
+    destination: str = Field(max_length=255)
+    uids: list[int] = Field(min_length=1, max_length=100)
+
+
+class GetThreadInput(_AccountScoped):
+    mailbox: str = Field(default="INBOX", max_length=255)
+    uid: int = Field(ge=1, description="Any UID belonging to the target thread.")
+    max_messages: int = Field(default=20, ge=1, le=50)
+    since_days: int = Field(default=90, ge=1, le=365)
+
+
+class ListDraftsInput(_AccountScoped):
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0, le=10_000)
+
+
+class UpdateDraftInput(_AccountScoped):
+    mailbox: str = Field(default="Drafts", max_length=255)
+    uid: int = Field(ge=1)
+    to: list[str] | None = None
+    cc: list[str] | None = None
+    subject: str | None = Field(default=None, max_length=998)
+    body: str | None = Field(default=None, max_length=200_000)
+    in_reply_to: str | None = None
+    references: list[str] | None = None
+    preserve_message_id: bool = Field(
+        default=True,
+        description="Keep the original Message-ID so threaded replies still reference it.",
+    )
+
+
+class SendDraftInput(_AccountScoped):
+    mailbox: str = Field(default="Drafts", max_length=255)
+    uid: int = Field(ge=1)
+    confirm: bool = Field(default=False, description="Must be true to actually send.")
 
 
 class ReplyDraftInput(_AccountScoped):

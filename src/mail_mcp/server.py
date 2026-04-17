@@ -27,13 +27,19 @@ from .config import Config, load
 from .safety.redaction import sanitize_error
 from .tools import drafts, organize, read, send
 from .tools.schemas import (
+    AccountInfoInput,
+    CopyEmailInput,
     CreateFolderInput,
     DeleteEmailInput,
     DeleteFolderInput,
     DownloadAttachmentInput,
     ForwardDraftInput,
     GetEmailInput,
+    GetQuotaInput,
+    GetThreadInput,
+    ListAccountsInput,
     ListAttachmentsInput,
+    ListDraftsInput,
     ListFoldersInput,
     MarkFlagsInput,
     MoveEmailInput,
@@ -41,7 +47,10 @@ from .tools.schemas import (
     ReplyDraftInput,
     SaveDraftInput,
     SearchInput,
+    SendDraftInput,
     SendEmailInput,
+    SpecialFoldersInput,
+    UpdateDraftInput,
 )
 
 log = logging.getLogger("mail_mcp")
@@ -56,6 +65,75 @@ def build_server(cfg: Config | None = None) -> Server:
     server: Server = Server("mail-mcp")
 
     readonly_tools: list[tuple[Tool, type, Any]] = [
+        (
+            Tool(
+                name="list_accounts",
+                description="List configured accounts with their default marker.",
+                inputSchema=ListAccountsInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            ListAccountsInput,
+            read.list_accounts,
+        ),
+        (
+            Tool(
+                name="get_account_info",
+                description="Return connection config and resolved mailboxes for a specific account.",
+                inputSchema=AccountInfoInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            AccountInfoInput,
+            read.get_account_info,
+        ),
+        (
+            Tool(
+                name="get_special_folders",
+                description=(
+                    "Detect the server's Drafts, Sent, Trash, Junk, Archive folders "
+                    "using RFC 6154 SPECIAL-USE flags."
+                ),
+                inputSchema=SpecialFoldersInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            SpecialFoldersInput,
+            read.get_special_folders,
+        ),
+        (
+            Tool(
+                name="get_quota",
+                description=(
+                    "Report storage quota (used_kb / limit_kb) for the given folder, "
+                    "or nulls if the server does not expose QUOTA."
+                ),
+                inputSchema=GetQuotaInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            GetQuotaInput,
+            read.get_quota,
+        ),
+        (
+            Tool(
+                name="list_drafts",
+                description="List messages in the account's Drafts mailbox (resolved automatically).",
+                inputSchema=ListDraftsInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            ListDraftsInput,
+            read.list_drafts,
+        ),
+        (
+            Tool(
+                name="get_thread",
+                description=(
+                    "Return the UIDs and header summaries of the conversation a "
+                    "message belongs to. Uses IMAP THREAD=REFERENCES when available."
+                ),
+                inputSchema=GetThreadInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            GetThreadInput,
+            read.get_thread,
+        ),
         (
             Tool(
                 name="list_folders",
@@ -131,6 +209,19 @@ def build_server(cfg: Config | None = None) -> Server:
         ),
         (
             Tool(
+                name="update_draft",
+                description=(
+                    "Edit an existing draft in place. Safely replaces the draft via "
+                    "APPEND-then-DELETE, preserving the Message-ID by default."
+                ),
+                inputSchema=UpdateDraftInput.model_json_schema(),
+                annotations={"readOnlyHint": False, "destructiveHint": False},
+            ),
+            UpdateDraftInput,
+            drafts.update_draft,
+        ),
+        (
+            Tool(
                 name="reply_draft",
                 description=(
                     "Draft a reply to an existing message. Threading headers "
@@ -163,6 +254,19 @@ def build_server(cfg: Config | None = None) -> Server:
     ]
 
     write_tools: list[tuple[Tool, type, Any]] = [
+        (
+            Tool(
+                name="copy_email",
+                description=(
+                    "Copy messages to another folder without removing them from the "
+                    "source. Use when you want the same email filed in two places."
+                ),
+                inputSchema=CopyEmailInput.model_json_schema(),
+                annotations={"destructiveHint": False},
+            ),
+            CopyEmailInput,
+            organize.copy_email,
+        ),
         (
             Tool(
                 name="move_email",
@@ -237,6 +341,19 @@ def build_server(cfg: Config | None = None) -> Server:
     ]
 
     send_tool: list[tuple[Tool, type, Any]] = [
+        (
+            Tool(
+                name="send_draft",
+                description=(
+                    "Send an existing draft via SMTP and remove it from Drafts. "
+                    "Gated by MAIL_MCP_SEND_ENABLED + confirm=true."
+                ),
+                inputSchema=SendDraftInput.model_json_schema(),
+                annotations={"destructiveHint": True, "openWorldHint": True},
+            ),
+            SendDraftInput,
+            drafts.send_draft,
+        ),
         (
             Tool(
                 name="send_email",

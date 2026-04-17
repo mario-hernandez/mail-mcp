@@ -12,8 +12,16 @@ ask only for what we must._
 > * v0.2.2 shipped `reply_draft`, `forward_draft` (attached as
 >   `message/rfc822` so the body never re-enters the LLM), and a per-account
 >   hourly rate limit on `send_email`.
-> * v0.2.3 (next) covers the Thunderbird and Apple Mail importers and
->   Microsoft 365 OAuth2.
+> * v0.2.3 added `create_folder`, `rename_folder`, `delete_folder`.
+> * v0.2.4 ("feels like a real mail client") added `copy_email`,
+>   `get_thread`, `get_special_folders`, `get_quota`, `list_drafts`,
+>   `update_draft`, `send_draft`, `list_accounts`, `get_account_info`, and
+>   disk-path attachments. See [`docs/V024_PLAN.md`](docs/V024_PLAN.md) for
+>   what was considered and explicitly deferred.
+> * v0.2.5 (next) is HTML body + `bleach` sanitiser, `sort_emails`, Gmail
+>   labels / `search_gmail_raw`.
+> * v0.3 brings the identity model rework (breaking), Microsoft 365 OAuth,
+>   and the optional Sieve / vacation extras.
 
 ## One-line summary per angle
 

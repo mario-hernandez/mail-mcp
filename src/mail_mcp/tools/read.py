@@ -16,11 +16,17 @@ from ..keyring_store import get_password
 from ..safety.guards import sanitize_header, wrap_untrusted
 from ..safety.paths import default_download_root, prepare_download_path
 from .schemas import (
+    AccountInfoInput,
     DownloadAttachmentInput,
     GetEmailInput,
+    GetQuotaInput,
+    GetThreadInput,
+    ListAccountsInput,
     ListAttachmentsInput,
+    ListDraftsInput,
     ListFoldersInput,
     SearchInput,
+    SpecialFoldersInput,
 )
 
 
@@ -129,6 +135,95 @@ def list_attachments(cfg: Config, params: ListAttachmentsInput) -> dict:
         "account": acct.alias,
         "uid": params.uid,
         "attachments": [_sanitize_attachment(asdict(a)) for a in body.attachments],
+    }
+
+
+def list_accounts(cfg: Config, _params: ListAccountsInput) -> dict:
+    default = cfg.model.default_alias
+    return {
+        "count": len(cfg.model.accounts),
+        "default": default,
+        "accounts": [
+            {"alias": a.alias, "email": a.email, "is_default": a.alias == default}
+            for a in cfg.model.accounts
+        ],
+    }
+
+
+def get_account_info(cfg: Config, params: AccountInfoInput) -> dict:
+    acct = cfg.account(params.account)
+    return {
+        "alias": acct.alias,
+        "email": acct.email,
+        "imap": {"host": acct.imap_host, "port": acct.imap_port, "ssl": acct.imap_use_ssl},
+        "smtp": {"host": acct.smtp_host, "port": acct.smtp_port, "starttls": acct.smtp_starttls},
+        "drafts_mailbox": acct.drafts_mailbox,
+        "trash_mailbox": acct.trash_mailbox,
+        "is_default": acct.alias == cfg.model.default_alias,
+    }
+
+
+def get_special_folders(cfg: Config, params: SpecialFoldersInput) -> dict:
+    acct, password = _resolve(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        specials = imap_client.detect_special_mailboxes(c)
+    return {"account": acct.alias, "special_folders": specials}
+
+
+def get_quota(cfg: Config, params: GetQuotaInput) -> dict:
+    acct, password = _resolve(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        quota = imap_client.get_quota(c, folder=params.folder)
+    return {"account": acct.alias, "folder": params.folder, **quota}
+
+
+def list_drafts(cfg: Config, params: ListDraftsInput) -> dict:
+    acct, password = _resolve(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        total, headers = imap_client.search(
+            c,
+            mailbox=acct.drafts_mailbox,
+            limit=params.limit,
+            offset=params.offset,
+        )
+    return {
+        "account": acct.alias,
+        "mailbox": acct.drafts_mailbox,
+        "total": total,
+        "offset": params.offset,
+        "returned": len(headers),
+        "results": [_sanitize_header_dict(h.__dict__) for h in headers],
+    }
+
+
+def get_thread(cfg: Config, params: GetThreadInput) -> dict:
+    acct, password = _resolve(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        # 1) find which thread the UID belongs to, then return that thread's UIDs.
+        groups = imap_client.thread_references(
+            c, mailbox=params.mailbox, since_days=params.since_days,
+        )
+        target: list[int] | None = None
+        for group in groups:
+            if params.uid in group:
+                target = group
+                break
+        if target is None:
+            # Fallback: confirm the UID exists and return it as a singleton thread.
+            imap_client.fetch_raw_message(c, mailbox=params.mailbox, uid=params.uid)
+            target = [params.uid]
+            notes = ["server did not advertise THREAD=REFERENCES; returning the message alone"]
+        else:
+            notes = []
+        target = sorted(target)[: params.max_messages]
+        messages = imap_client.fetch_headers(c, mailbox=params.mailbox, uids=target)
+    return {
+        "account": acct.alias,
+        "mailbox": params.mailbox,
+        "thread_size": len(target),
+        "returned": len(messages),
+        "messages": [_sanitize_header_dict(m.__dict__) for m in messages],
+        "notes": notes,
     }
 
 

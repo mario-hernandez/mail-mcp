@@ -7,7 +7,63 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+_No unreleased changes yet. See [`ROADMAP.md`](ROADMAP.md) for what is coming next._
+
+## [0.2.4] — 2026-04-17
+
+### Added — "feels like a real mail client" round
+
+Ten new tools, zero new runtime dependencies. Consolidated from a nine-angle
+coverage review (IMAP RFCs, SMTP/MIME, drafts workflow, threads, proprietary
+extensions, Sieve, vacation, identities, attachments, multi-account).
+
+**IMAP coverage**
+- `copy_email(source, destination, uids)` — IMAP COPY. Archive while keeping
+  the original in place.
+- `get_thread(mailbox, uid)` — conversation reconstruction via
+  `THREAD=REFERENCES` when the server advertises it, graceful singleton
+  fallback otherwise. Respects the same XPIA / bounded-output contract as
+  `search_emails`.
+- `get_special_folders()` — RFC 6154 SPECIAL-USE resolver exposed as a tool
+  (it was previously used only during `mail-mcp init`).
+- `get_quota(folder="INBOX")` — RFC 9208 GETQUOTAROOT. Returns
+  `used_kb`/`limit_kb` with nulls when the provider hides quota.
+
+**Drafts workflow completion**
+- `list_drafts(limit, offset)` — paginated listing that resolves the
+  account's Drafts mailbox automatically.
+- `update_draft(mailbox, uid, to?, subject?, body?, …, preserve_message_id=true)`
+  — in-place edit via APPEND-then-DELETE. The Message-ID is preserved by
+  default so threaded replies still resolve.
+- `send_draft(mailbox, uid, confirm=true)` — send an already-reviewed draft
+  via SMTP, then remove it from Drafts. Gated identically to `send_email`
+  and counts against the same hourly rate limit.
+
+**Multi-account**
+- `list_accounts()` — enumerate the configured aliases and mark the default.
+- `get_account_info(account)` — connection config + resolved mailboxes in
+  one read-only call.
+
+**SMTP/MIME**
+- `attachments` parameter on `save_draft`, `reply_draft`, `send_email`
+  (extends to `forward_draft` through the shared builder). Disk-path only
+  in this release. Files must resolve under `~/Downloads`,
+  `~/Documents/mail-mcp-outbox`, `$TMPDIR`, or `$MAIL_MCP_ATTACHMENT_DIR`;
+  symlinks are rejected after `resolve(strict=True)`. Per-file cap 25 MB,
+  per-message total 50 MB, MIME sniffed via `mimetypes`.
+
+### Changed
+- `tools/send.py::_check_rate_limit` is now shared by `send_draft`, so a
+  prompt-injected LLM cannot bypass the hourly cap by switching tools.
+- `docs/V024_PLAN.md` documents the synthesis; deferred items are listed
+  there and in `ROADMAP.md` so readers see what was considered and passed
+  on.
+
+### Deferred explicitly (see `docs/V024_PLAN.md`)
+- HTML body + `bleach` sanitiser, sort by header, Gmail
+  `add_gmail_labels` / `search_gmail_raw`, cross-account `transfer_email`,
+  base64 inline attachments, identity model rework (v0.3 breaking change),
+  Sieve / vacation extras.
 
 ## [0.2.3] — 2026-04-17
 
