@@ -29,11 +29,13 @@ from .tools import drafts, organize, read, send
 from .tools.schemas import (
     DeleteEmailInput,
     DownloadAttachmentInput,
+    ForwardDraftInput,
     GetEmailInput,
     ListAttachmentsInput,
     ListFoldersInput,
     MarkFlagsInput,
     MoveEmailInput,
+    ReplyDraftInput,
     SaveDraftInput,
     SearchInput,
     SendEmailInput,
@@ -123,6 +125,37 @@ def build_server(cfg: Config | None = None) -> Server:
             ),
             SaveDraftInput,
             drafts.save_draft,
+        ),
+        (
+            Tool(
+                name="reply_draft",
+                description=(
+                    "Draft a reply to an existing message. Threading headers "
+                    "(In-Reply-To, References, Subject 'Re: …') are derived "
+                    "from the original; the original body is NOT re-read into "
+                    "the model context, only an attribution header is added."
+                ),
+                inputSchema=ReplyDraftInput.model_json_schema(),
+                annotations={"readOnlyHint": False, "destructiveHint": False},
+            ),
+            ReplyDraftInput,
+            drafts.reply_draft,
+        ),
+        (
+            Tool(
+                name="forward_draft",
+                description=(
+                    "Draft a forward of an existing message. The original is "
+                    "attached verbatim as message/rfc822 — its body and "
+                    "attachments are never re-parsed through the LLM, "
+                    "neutralising prompt-injection carried inside forwarded "
+                    "content."
+                ),
+                inputSchema=ForwardDraftInput.model_json_schema(),
+                annotations={"readOnlyHint": False, "destructiveHint": False},
+            ),
+            ForwardDraftInput,
+            drafts.forward_draft,
         ),
     ]
 
@@ -239,7 +272,14 @@ def _classify(exc: BaseException) -> dict[str, Any]:
     hint: str | None = None
     retryable = False
 
-    if cls in {"SendDisabled", "OperationDisabled"}:
+    if cls == "RateLimited":
+        code = "RATE_LIMITED"
+        hint = (
+            "The per-account hourly send ceiling was reached. "
+            "Raise MAIL_MCP_SEND_HOURLY_LIMIT or wait ~1 hour."
+        )
+        retryable = True
+    elif cls in {"SendDisabled", "OperationDisabled"}:
         code = "PERMISSION_DENIED"
         hint = (
             "This tool is gated behind an environment flag. "

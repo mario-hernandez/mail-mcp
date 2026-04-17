@@ -268,6 +268,34 @@ def search(
     return total, headers
 
 
+def fetch_raw_message(
+    client: IMAPClient,
+    *,
+    mailbox: str,
+    uid: int,
+) -> tuple[bytes, dict[str, str]]:
+    """Fetch a message's raw RFC822 bytes plus a small set of headers.
+
+    Used by ``forward_draft`` to attach the original as ``message/rfc822``
+    without re-parsing its body into the LLM context, and by ``reply_draft``
+    to pull ``Message-ID`` / ``References`` / ``Subject`` / ``From`` /
+    ``Reply-To`` so it can thread the reply correctly.
+    """
+    validate_mailbox_name(mailbox)
+    client.select_folder(mailbox, readonly=True)
+    fetched = client.fetch([uid], ["RFC822"])
+    item = fetched.get(uid)
+    if not item:
+        raise RuntimeError(f"uid {uid} not found in {mailbox!r}")
+    raw: bytes = item[b"RFC822"]
+    msg: EmailMessage = email.message_from_bytes(raw, policy=email.policy.default)  # type: ignore[assignment]
+    headers = {
+        name: str(msg.get(name, ""))
+        for name in ("Message-ID", "References", "In-Reply-To", "Subject", "From", "To", "Cc", "Reply-To", "Date")
+    }
+    return raw, headers
+
+
 def get_message(
     client: IMAPClient,
     *,

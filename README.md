@@ -46,6 +46,8 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `list_attachments` | ✅ | default | Attachment metadata for a message |
 | `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/` |
 | `save_draft` | ✍️ | default | Build a MIME draft and store it in Drafts (preferred write path) |
+| `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject |
+| `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822`, body never re-read into the LLM |
 | `move_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Move messages between mailboxes |
 | `mark_emails` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Set/clear Seen and Flagged |
 | `delete_emails` | 🗑️ | `MAIL_MCP_WRITE_ENABLED=true` | Move to Trash by default; permanent delete double-gated |
@@ -164,6 +166,7 @@ failures and their fixes.
 | `MAIL_MCP_WRITE_ENABLED` | `false` | Register `move_email`, `mark_emails`, `delete_emails`. |
 | `MAIL_MCP_SEND_ENABLED` | `false` | Register `send_email` (additionally requires write). |
 | `MAIL_MCP_ALLOW_PERMANENT_DELETE` | `false` | Allow `permanent=true` on `delete_emails`. |
+| `MAIL_MCP_SEND_HOURLY_LIMIT` | `10` | Max `send_email` calls per account alias per hour. |
 | `MAIL_MCP_LOG_LEVEL` | `WARNING` | Server log level on stderr (`DEBUG` / `INFO` / `WARNING` / `ERROR`). |
 | `MAIL_MCP_IMAP_CONNECT_TIMEOUT` | `15` | IMAP TCP + TLS handshake timeout, seconds. |
 | `MAIL_MCP_IMAP_READ_TIMEOUT` | `30` | IMAP socket read timeout, seconds. |
@@ -175,6 +178,7 @@ Once connected, talk to your AI assistant in plain language:
 - *"Find the last email from Imma and summarise it for me."*
 - *"List all attachments from this week's emails with subject containing 'contract'."*
 - *"Draft a reply to the UID 4231 email thanking them and confirming the meeting on Thursday."*
+- *"Forward this email to my accountant with a short note — as an attachment, please."*
 - *"Move all 'GitHub notifications' older than 30 days to my Archive folder."* (requires `MAIL_MCP_WRITE_ENABLED=true`)
 
 ## Security
@@ -198,7 +202,7 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 72 tests covering the safety boundaries
+pytest         # 87 tests covering the safety boundaries
 ruff check src tests
 ```
 

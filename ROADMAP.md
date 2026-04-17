@@ -8,9 +8,12 @@ ask only for what we must._
 > **Release snapshot (2026-04-17)**
 > * v0.2.0 shipped the interactive wizard + 5-tier autoconfig waterfall.
 > * v0.2.1 pivoted to security hardening and onboarding polish (see
->   [`CHANGELOG.md`](CHANGELOG.md)). Importers were deferred to v0.2.2.
-> * v0.2.2 (in progress) covers the Thunderbird and Apple Mail importers,
->   Microsoft 365 OAuth2, and the `reply_draft` / `forward_draft` tools.
+>   [`CHANGELOG.md`](CHANGELOG.md)). Importers were deferred to v0.2.3.
+> * v0.2.2 shipped `reply_draft`, `forward_draft` (attached as
+>   `message/rfc822` so the body never re-enters the LLM), and a per-account
+>   hourly rate limit on `send_email`.
+> * v0.2.3 (next) covers the Thunderbird and Apple Mail importers and
+>   Microsoft 365 OAuth2.
 
 ## One-line summary per angle
 

@@ -9,6 +9,30 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet. See [`ROADMAP.md`](ROADMAP.md) for what is coming next._
 
+## [0.2.2] — 2026-04-17
+
+### Added
+- `reply_draft` tool — draft a reply to an existing message. Threading
+  headers (`In-Reply-To`, `References`, `Subject: Re: …`) are derived from
+  the original server-side; the body is not re-read into the LLM context,
+  only an attribution line ("On <date>, <sender> wrote:") is added.
+- `forward_draft` tool — draft a forward that attaches the original as a
+  `message/rfc822` part. The forwarded content is never re-parsed through
+  the LLM, neutralising prompt injection that rides inside forwarded
+  emails. Pattern adapted from `thegreystone/mcp-email`.
+- `fetch_raw_message` helper in `imap_client` exposes a message's raw
+  RFC822 bytes plus its threading headers without fetching the body twice.
+- `build_reply_message` / `build_forward_message` helpers in `smtp_client`
+  encapsulate the reply/forward assembly and validation.
+
+### Changed
+- `send_email` is now rate-limited per account alias (default 10 per hour,
+  configurable with `MAIL_MCP_SEND_HOURLY_LIMIT`). The limit bucket lives
+  in-process and resets on server restart. Protects against amplification
+  of a successful prompt injection attack on the LLM.
+- Error responses from exceeded send limits carry `code: RATE_LIMITED`,
+  `retryable: true`, and a hint pointing at the env var.
+
 ## [0.2.1] — 2026-04-17
 
 ### Added

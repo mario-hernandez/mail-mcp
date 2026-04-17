@@ -94,6 +94,35 @@ class SendEmailInput(SaveDraftInput):
     )
 
 
+class ReplyDraftInput(_AccountScoped):
+    mailbox: str = Field(default="INBOX", max_length=255, description="Mailbox holding the original message.")
+    uid: int = Field(ge=1, description="UID of the original message within the mailbox.")
+    body: str = Field(max_length=200_000, description="The reply body you want to draft.")
+    reply_all: bool = Field(
+        default=False,
+        description="If true, address all recipients of the original (minus your own address).",
+    )
+    extra_to: list[str] | None = Field(default=None, description="Extra recipients to append to the reply's To field.")
+    cc: list[str] | None = Field(default=None, description="Explicit Cc list when reply_all is false.")
+    include_original_quote: bool = Field(
+        default=True,
+        description="Prefix the draft with a 'On <date>, <sender> wrote:' attribution.",
+    )
+
+
+class ForwardDraftInput(_AccountScoped):
+    mailbox: str = Field(default="INBOX", max_length=255, description="Mailbox holding the original message.")
+    uid: int = Field(ge=1, description="UID of the message to forward.")
+    to: list[str] = Field(min_length=1, max_length=50, description="Recipients of the forward.")
+    comment: str = Field(
+        default="",
+        max_length=50_000,
+        description="Optional note prepended as the forward's body. The original is attached as message/rfc822.",
+    )
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+
+
 class MoveEmailInput(_AccountScoped):
     source: str = Field(default="INBOX", max_length=255)
     destination: str = Field(max_length=255)
