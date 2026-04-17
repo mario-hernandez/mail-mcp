@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 from xml.etree import ElementTree as ET
 
+from .safety.tls import create_tls_context
 from .safety.validation import validate_email_address
 
 Security = Literal["ssl", "starttls", "plain"]
@@ -127,6 +128,10 @@ _MX_PRESETS: list[tuple[str, str]] = [
     ("udag.de",                     "ionos.de"),
     ("1and1.com",                   "ionos.es"),
     ("1and1.es",                    "ionos.es"),
+    ("ionos.es",                    "ionos.es"),        # IONOS custom-domain MX (mx00.ionos.es, ...)
+    ("ionos.de",                    "ionos.de"),
+    ("ionos.co.uk",                 "ionos.de"),
+    ("ionos.com",                   "ionos.de"),
 ]
 
 
@@ -205,7 +210,7 @@ def _fetch_autoconfig(url: str, *, timeout: float) -> Discovery | None:
     if not url.startswith("https://"):
         return None
     req = urllib.request.Request(url, headers={"User-Agent": "mail-mcp autoconfig"})
-    ctx = ssl.create_default_context()
+    ctx = create_tls_context()
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             if resp.status != 200:

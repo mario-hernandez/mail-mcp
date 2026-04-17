@@ -20,6 +20,7 @@ from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 
 from .config import AccountModel
+from .safety.tls import create_tls_context
 from .safety.validation import (
     ValidationError,
     validate_email_address,
@@ -114,7 +115,7 @@ def test_login(account: AccountModel, password: str, *, timeout: float = 15.0) -
     Used by the interactive wizard to verify the user's credentials before
     saving them. Raises the underlying :mod:`smtplib` exception on failure.
     """
-    ctx = ssl.create_default_context()
+    ctx = create_tls_context()
     if account.smtp_starttls:
         with smtplib.SMTP(account.smtp_host, account.smtp_port, timeout=timeout) as server:
             server.ehlo()
@@ -140,7 +141,7 @@ def send(
     ``bcc`` entries are added to the envelope recipients but never appear as
     a header. Returns the message's ``Message-ID``.
     """
-    ctx = ssl.create_default_context()
+    ctx = create_tls_context()
     recipients = [
         *[a.strip() for a in msg.get("To", "").split(",") if a.strip()],
         *[a.strip() for a in msg.get("Cc", "").split(",") if a.strip()],

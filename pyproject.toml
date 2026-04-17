@@ -27,6 +27,7 @@ dependencies = [
     "imapclient>=3.0.1",
     "keyring>=25.0.0",
     "pydantic>=2.6.0",
+    "certifi>=2024.0.0",
 ]
 
 [project.optional-dependencies]

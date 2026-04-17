@@ -50,10 +50,20 @@ minor bump and are called out explicitly.
   instead of the previous private-attribute trick — the wire envelope still
   receives the BCC while the MIME bytes never do.
 
+### Fixed
+- `ssl.SSLCertVerificationError: unable to get local issuer certificate` on
+  macOS with Python installed from python.org. The IMAP, SMTP and autoconfig
+  TLS contexts now prefer the `certifi` CA bundle when available; `certifi`
+  is a direct dependency so `pip install mail-mcp` is enough.
+- MX presets for IONOS custom domains (`mx00.ionos.es`, `mx01.ionos.es`,
+  ...). The substring `ionos.es` / `ionos.de` is now recognised, so a
+  domain like `example.es` hosted on IONOS is autodetected without falling
+  back to the generic heuristic.
+
 ### Removed
 - The personal-domain shortcut that embedded `mariohernandez.es` in the
-  autoconfig table. Custom domains on IONOS are still resolved via the MX
-  preset tier.
+  autoconfig table. Custom domains on IONOS are resolved via the MX preset
+  tier now that `ionos.es` / `ionos.de` substrings are mapped.
 
 ### Documentation
 - `docs/V021_PLAN.md` — synthesis of the 9-agent improvement review.

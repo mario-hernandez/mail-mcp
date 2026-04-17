@@ -30,6 +30,7 @@ from typing import Any
 from imapclient import IMAPClient, SocketTimeout
 
 from .config import AccountModel
+from .safety.tls import create_tls_context
 from .safety.validation import (
     ValidationError,
     clamp_int,
@@ -77,7 +78,7 @@ class EmailBody:
 @contextmanager
 def connect(account: AccountModel, password: str):
     """Open an authenticated IMAP connection with TLS enforced."""
-    ctx = ssl.create_default_context()
+    ctx = create_tls_context()
     if not account.imap_use_ssl:
         raise ValidationError("IMAP connections must use SSL/TLS (imap_use_ssl=true)")
     client = IMAPClient(
