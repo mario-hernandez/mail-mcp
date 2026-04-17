@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mail-mcp"
-version = "0.2.4"
+version = "0.2.5"
 description = "A privacy-first IMAP/SMTP MCP server for Claude Desktop, Claude Code, and Codex CLI."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -44,6 +44,10 @@ dev = [
     "rich>=13.7.0",
     "dnspython>=2.4.0",
 ]
+integration = [
+    "testcontainers>=4.0",
+    "requests>=2.30",
+]
 
 [project.scripts]
 mail-mcp = "mail_mcp.__main__:main"
@@ -72,3 +76,6 @@ ignore = ["S101"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 norecursedirs = ["research", ".venv", "dist", "build"]
+markers = [
+    "integration: end-to-end tests against a real IMAP/SMTP server (GreenMail). Opt-in via MAIL_MCP_INTEGRATION=1 or -m integration.",
+]

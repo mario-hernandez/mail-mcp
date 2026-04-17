@@ -1,0 +1,46 @@
+# GreenMail test fixture for mail-mcp integration tests.
+#
+# Starts a single GreenMail 2.1.x container exposing SMTP/SMTPS/IMAP/IMAPS and
+# the admin REST API. Consumed from tests via the `greenmail` session fixture
+# (see tests/integration/conftest.py) and directly by developers debugging a
+# failing suite (`docker compose -f tests/integration/docker-compose.yml up`).
+#
+# GreenMail accepts any LOGIN/PLAIN credentials and auto-creates the mailbox
+# on first access. The `greenmail.users.admin=admin:admin` knob seeds an admin
+# user only so the admin REST endpoint has something to authenticate against;
+# tests use ephemeral `test-<uuid>@localhost` accounts.
+
+services:
+  greenmail:
+    image: greenmail/standalone:2.1.3
+    container_name: mail-mcp-greenmail
+    environment:
+      # -Dgreenmail.setup.test.all -> enable all protocols on the +3000 ports
+      #   (SMTP 3025, SMTPS 3465, POP3 3110, POP3S 3995, IMAP 3143, IMAPS 3993)
+      # -Dgreenmail.users.admin=admin:admin -> seed an admin user for the REST API
+      # -Dgreenmail.hostname=0.0.0.0 -> listen on all interfaces in the container
+      #   (without this GreenMail binds to 127.0.0.1 only, making the published
+      #    ports unreachable from the host)
+      # -Dgreenmail.verbose -> log every SMTP/IMAP command; invaluable when debugging
+      GREENMAIL_OPTS: "-Dgreenmail.setup.test.all -Dgreenmail.users.admin=admin:admin -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.verbose"
+    ports:
+      # Host ports are shifted +10000 to avoid collisions with locally running
+      # services (nginx on 8080, other mail tools on 3993, ...). Matches the
+      # values in tests/integration/conftest.py.
+      - "13025:3025"   # SMTP plain
+      - "13110:3110"   # POP3 plain (unused by mail-mcp, exposed for completeness)
+      - "13143:3143"   # IMAP plain
+      - "13465:3465"   # SMTPS
+      - "13993:3993"   # IMAPS
+      - "18080:8080"   # Admin REST API
+    healthcheck:
+      # The admin REST API answers on /api/service/readiness once the JVM has
+      # finished booting and every listener is bound. Using the admin endpoint
+      # means we only declare "healthy" when the ports tests actually rely on
+      # are serving traffic.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/api/service/readiness || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    restart: "no"

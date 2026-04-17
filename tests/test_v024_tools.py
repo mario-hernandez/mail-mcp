@@ -38,9 +38,10 @@ def test_get_quota_returns_nulls_when_not_supported():
 
 def test_get_quota_parses_storage_resource():
     c = MagicMock()
-    c.get_quota_root.return_value = (["Quota:User"], [])
+    # imapclient 3.x: get_quota_root returns (MailboxQuotaRoots, list[Quota])
+    # in one call; no second fetch needed.
     mock_q = MagicMock(resource="STORAGE", usage=1024, limit=10240)
-    c.get_quota.return_value = [mock_q]
+    c.get_quota_root.return_value = (MagicMock(mailbox="INBOX", quota_roots=["User"]), [mock_q])
     out = imap_client.get_quota(c, folder="INBOX")
     assert out == {"used_kb": 1024, "limit_kb": 10240}
 

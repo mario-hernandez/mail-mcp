@@ -20,6 +20,7 @@ from __future__ import annotations
 import email
 import email.policy
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -367,10 +368,30 @@ def download_attachment(
     raise RuntimeError(f"attachment index {index} not found on uid {uid}")
 
 
+_APPENDUID_RE = re.compile(rb"APPENDUID\s+\d+\s+(\d+)")
+
+
 def save_draft(client: IMAPClient, *, account: AccountModel, message_bytes: bytes) -> int:
-    """Append a pre-built MIME message to the drafts mailbox."""
+    """Append a pre-built MIME message to the drafts mailbox.
+
+    Returns the new UID. Servers that advertise UIDPLUS (RFC 4315) reply
+    with ``[APPENDUID <uidvalidity> <uid>] APPEND completed.``; ``imapclient``
+    forwards the raw response bytes, so we extract the trailing UID token.
+    Fallback for non-UIDPLUS servers: interpret the response as a bare
+    integer, or return 0 when neither shape is recognised.
+    """
     validate_mailbox_name(account.drafts_mailbox)
-    return int(client.append(account.drafts_mailbox, message_bytes, flags=[b"\\Draft"]))
+    raw = client.append(account.drafts_mailbox, message_bytes, flags=[b"\\Draft"])
+    if isinstance(raw, int):
+        return raw
+    data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
+    m = _APPENDUID_RE.search(bytes(data))
+    if m:
+        return int(m.group(1))
+    try:
+        return int(bytes(data).strip())
+    except (TypeError, ValueError):
+        return 0
 
 
 def copy_uids(
@@ -400,13 +421,14 @@ def get_quota(client: IMAPClient, *, folder: str = "INBOX") -> dict[str, int | N
     """
     validate_mailbox_name(folder)
     try:
-        roots, _ = client.get_quota_root(folder)
+        # ``get_quota_root`` returns ``(MailboxQuotaRoots, list[Quota])`` in
+        # imapclient 3.x; the quotas are included, so no second call is
+        # needed. Some servers advertise the capability but respond with an
+        # empty list (Gmail, some Dovecot configs) — treated as "unknown".
+        _roots, quotas = client.get_quota_root(folder)
     except Exception:  # noqa: BLE001 — provider may not implement QUOTA
         return {"used_kb": None, "limit_kb": None}
-    if not roots:
-        return {"used_kb": None, "limit_kb": None}
-    quotas = client.get_quota(roots[0])
-    storage = next((q for q in quotas if getattr(q, "resource", "") == "STORAGE"), None)
+    storage = next((q for q in (quotas or []) if getattr(q, "resource", "") == "STORAGE"), None)
     if storage is None:
         return {"used_kb": None, "limit_kb": None}
     return {"used_kb": int(storage.usage), "limit_kb": int(storage.limit)}

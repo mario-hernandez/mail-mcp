@@ -7,7 +7,31 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet. See [`ROADMAP.md`](ROADMAP.md) for what is coming next._
+_No unreleased changes yet._
+
+## [0.2.5] — 2026-04-18
+
+### Added
+- `tests/integration/` — end-to-end test suite against a real GreenMail
+  IMAP/SMTP server (docker). 37 tests covering read (13), write (12),
+  and drafts+send (12). Opt-in via `MAIL_MCP_INTEGRATION=1 pytest -m
+  integration`. New `[integration]` install extra pulls `testcontainers`
+  and `requests`.
+- `docs/TESTING.md` via `tests/integration/README.md` — how to run the
+  suite, expected latency, debugging tips, and GreenMail quirks
+  (auto-creation of users via the admin REST API, SPECIAL-USE folders
+  have to be pre-created, binding to 0.0.0.0 is required).
+
+### Fixed
+- `imap_client.save_draft` now handles UIDPLUS responses from the server.
+  GreenMail (and many production servers) reply to APPEND with
+  ``[APPENDUID <uidvalidity> <uid>] APPEND completed.`` rather than a
+  bare integer; the previous `int(raw)` cast blew up, leaving the draft
+  correctly written but reporting a broken UID upstream. Detected by the
+  new integration suite before any user hit it.
+- `imap_client.get_quota` adapted to the `imapclient` 3.x signature of
+  `get_quota_root` (already returns `(MailboxQuotaRoots, list[Quota])`,
+  no follow-up `get_quota` call needed).
 
 ## [0.2.4] — 2026-04-17
 
