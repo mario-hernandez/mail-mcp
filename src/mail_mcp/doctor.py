@@ -12,8 +12,10 @@ unless ``--connect`` is passed:
   ``MAIL_MCP_SEND_ENABLED``, ``MAIL_MCP_ALLOW_PERMANENT_DELETE``,
   ``MAIL_MCP_LOG_LEVEL``).
 
-The report is designed to be pasted verbatim into a bug report; nothing
-secret (passwords, message bodies, tokens) is emitted.
+No passwords, tokens or message bodies are emitted. The report **does**
+include the account's email address and the hostnames of the configured
+IMAP/SMTP servers — redact these if you intend to paste the output into a
+public bug tracker.
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from pathlib import Path
 from . import __version__
 from .config import load
 from .keyring_store import SERVICE_PREFIX
-
 
 _ENV_FLAGS = (
     "MAIL_MCP_WRITE_ENABLED",
@@ -96,7 +97,10 @@ def run(argv: list[str] | None = None) -> int:
         print(f"  {client:<17} {path}  {marker}")
 
     print()
-    print("Report generated with `mail-mcp doctor`. Share it verbatim when filing an issue.")
+    print(
+        "Report generated with `mail-mcp doctor`. "
+        "Redact email addresses and IMAP/SMTP hostnames before sharing publicly."
+    )
     return 0
 
 

@@ -11,5 +11,8 @@ build/
 .ruff_cache/
 .mypy_cache/
 .DS_Store
+.coverage
 docs/images/*.png.bak
 research/
+docs/V021_PLAN.md
+

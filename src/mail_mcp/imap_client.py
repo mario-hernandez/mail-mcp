@@ -20,7 +20,6 @@ from __future__ import annotations
 import email
 import email.policy
 import os
-import ssl
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -94,7 +93,7 @@ def connect(account: AccountModel, password: str):
     finally:
         try:
             client.logout()
-        except Exception:  # noqa: BLE001 - best-effort teardown
+        except Exception:  # noqa: BLE001, S110 — best-effort teardown, errors are informational only
             pass
 
 

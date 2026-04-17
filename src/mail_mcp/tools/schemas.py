@@ -21,7 +21,10 @@ class _AccountScoped(BaseModel):
 class ListFoldersInput(_AccountScoped):
     pattern: str | None = Field(
         default=None,
-        description="IMAP LIST pattern. Defaults to '*' (everything). Use '%' to list only top level, 'INBOX/%' to list under INBOX, etc.",
+        description=(
+            "IMAP LIST pattern. Defaults to '*' (everything). "
+            "Use '%' to list only top-level folders, 'INBOX/%' to list children of INBOX, etc."
+        ),
         max_length=255,
     )
     subscribed_only: bool = Field(

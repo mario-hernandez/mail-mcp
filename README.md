@@ -17,9 +17,7 @@ Give your AI assistant real access to your mailbox — read, search, draft, orga
 
 ## Why this exists
 
-I wanted my Claude Code (and Codex) sessions to understand my inbox: find the last email from a client, pull the PDF they sent, draft a reply, archive the newsletter bulk. There are already nine MCP servers that claim to do this. I audited the code of all of them in parallel and the pattern was uncomfortable — **plaintext passwords on disk, hardcoded TLS bypasses, "AES-256 encrypted" credential stores where the key is literally `hostname + username`, OAuth client secrets embedded in the binary, and zero-config relays that route your IMAP password through the author's own domain**.
-
-`mail-mcp` is what I wish one of them had been.
+I wanted my Claude Code (and Codex) sessions to understand my inbox: find the last email from a client, pull the PDF they sent, draft a reply, archive the newsletter bulk. After auditing nine existing email MCP implementations I kept finding the same patterns — credentials written to disk in plain text, TLS verification bypassed, OAuth secrets shipped in the binary. `mail-mcp` is what I wish one of them had been. The audit notes live in [`SYNTHESIS.md`](SYNTHESIS.md) for anyone who wants to check the reasoning.
 
 ## Highlights
 
@@ -27,7 +25,7 @@ I wanted my Claude Code (and Codex) sessions to understand my inbox: find the la
 - 🛡️ **TLS is mandatory.** IMAP uses implicit TLS (port 993). SMTP uses STARTTLS (587) or SMTPS (465). There is no knob to disable certificate verification.
 - 🧱 **Prompt-injection hardened.** Email bodies are wrapped in an `<untrusted_email_content>` envelope with an explicit warning; closing-tag breakouts and zero-width injection characters are neutralised before the model sees them.
 - 🚪 **Write access is gated by default.** Destructive tools are *not even registered* unless you opt in via environment variables. `send_email` additionally requires a second flag and an explicit `confirm=true`.
-- 🪶 **Small, auditable, four direct dependencies.** `mcp`, `imapclient`, `keyring`, `pydantic`. No web UI, no telemetry, no update checks, no relays, no phone-home.
+- 🪶 **Small, auditable, five direct dependencies.** `mcp`, `imapclient`, `keyring`, `pydantic`, `certifi`. No web UI, no telemetry, no update checks, no relays, no phone-home.
 - 🧰 **Clean tool surface** — structured IMAP search (no concatenation), bounded outputs, path-traversal-safe attachment saves.
 
 ## Architecture
@@ -40,8 +38,8 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 
 ## Tools
 
-| Tool | Read-only | Mode | What it does |
-|------|:---------:|------|--------------|
+| Tool | Type | Mode | What it does |
+|------|:----:|------|--------------|
 | `list_folders` | ✅ | default | List mailboxes on the account |
 | `search_emails` | ✅ | default | Structured IMAP search (subject/from/to/since/flags/…) |
 | `get_email` | ✅ | default | Fetch a message, body wrapped in XPIA envelope |
@@ -189,7 +187,7 @@ Extensive threat model in [SECURITY.md](SECURITY.md) and [docs/THREAT_MODEL.md](
 - CRLF-injection defence in every header-bound string.
 - XPIA wrapper on every email body returned to the LLM.
 - Destructive tools require explicit opt-in flags *and* argument confirmation.
-- Four direct dependencies, reproducible builds, no postinstall hooks.
+- Five direct dependencies, reproducible builds, no postinstall hooks.
 
 To report a vulnerability: email `m@mariohernandez.es` with the subject prefix `[mail-mcp]`. Please do not open a public GitHub issue for security reports.
 
@@ -200,14 +198,14 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 45+ tests, all green
+pytest         # 72 tests covering the safety boundaries
 ruff check src tests
 ```
 
-## Non-goals (for v0.1)
+## Non-goals
 
-- OAuth2 (planned for v0.2 — Gmail/Outlook without app passwords).
-- Multiple-account switching at tool-call time (single default account wins in v0.1).
+- OAuth2 (scheduled for v0.2.2 — Gmail/Outlook without app passwords).
+- Multiple-account switching at tool-call time (single default account in v0.2.x).
 - HTTP/SSE transport.
 - Web UI.
 - Calendar integration.
@@ -220,6 +218,6 @@ Keeping the surface tiny is a feature, not a shortcoming.
 
 ## Acknowledgements
 
-The design was informed by a parallel audit of nine existing email MCP servers. Patterns that worked well in `codefuturist/email-mcp`, `thegreystone/mcp-email`, and `bradsjm/mail-imap-mcp-rs` — structured SEARCH, XPIA envelopes, write-gating, prompt-injection-aware tool descriptions — were adapted here with attribution in spirit. The mistakes in the others (hardcoded `rejectUnauthorized: false`, theatrical "encryption", CRLF injection, author-hosted credential relays) informed the non-goals.
+The design was informed by a parallel audit of nine existing email MCP servers. Patterns that worked well in [`codefuturist/email-mcp`](https://github.com/codefuturist/email-mcp), [`thegreystone/mcp-email`](https://github.com/thegreystone/mcp-email), and [`bradsjm/mail-imap-mcp-rs`](https://github.com/bradsjm/mail-imap-mcp-rs) — structured SEARCH, XPIA envelopes, write-gating, prompt-injection-aware tool descriptions — were adapted here (inspiration, no code copied). The notes from that audit, including what pushed the non-goals list, live in [`SYNTHESIS.md`](SYNTHESIS.md).
 
 If you build something on top of `mail-mcp`, I'd love to hear about it.

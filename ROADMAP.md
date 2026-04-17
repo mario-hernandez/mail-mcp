@@ -1,9 +1,16 @@
-# Roadmap v0.2 — onboarding and imports
+# Roadmap — onboarding, imports, OAuth
 
-Consolidated from a 10-agent parallel research sweep (see `research/` transcripts and
-conclusions below). The goal of v0.2 is to remove all friction from getting a new
-account wired up: detect what the user already has, fill what we can, and ask only for
-what we must.
+_Consolidated from a 10-agent parallel research sweep; the full notes live in
+`SYNTHESIS.md`. The overall goal of v0.2 is to remove friction from getting a
+new account wired up: detect what the user already has, fill what we can, and
+ask only for what we must._
+
+> **Release snapshot (2026-04-17)**
+> * v0.2.0 shipped the interactive wizard + 5-tier autoconfig waterfall.
+> * v0.2.1 pivoted to security hardening and onboarding polish (see
+>   [`CHANGELOG.md`](CHANGELOG.md)). Importers were deferred to v0.2.2.
+> * v0.2.2 (in progress) covers the Thunderbird and Apple Mail importers,
+>   Microsoft 365 OAuth2, and the `reply_draft` / `forward_draft` tools.
 
 ## One-line summary per angle
 
@@ -71,7 +78,7 @@ what we must.
 * Detection succeeds offline (no internet) when the provider is in the embedded ISPDB.
 * Embedded ISPDB does not grow the install past 500 KB total.
 * No new *required* dependencies; `questionary` and `rich` only via `mail-mcp[cli]`.
-* 45 tests still passing; new tests cover the autoconfig waterfall with mocked endpoints.
+* Test suite stays green (72 tests at v0.2.1); new tests cover the autoconfig waterfall with mocked endpoints.
 * `SECURITY.md` updated with the Keychain first-launch prompt explanation.
 
 ## References (pointers, not embedding)

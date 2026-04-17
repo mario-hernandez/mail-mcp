@@ -15,7 +15,6 @@ defence against header-injection attacks.
 from __future__ import annotations
 
 import smtplib
-import ssl
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 

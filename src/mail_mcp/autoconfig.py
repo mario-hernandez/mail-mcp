@@ -209,10 +209,12 @@ def discover(email: str, *, timeout: float = 3.0, offline: bool = False) -> Disc
 def _fetch_autoconfig(url: str, *, timeout: float) -> Discovery | None:
     if not url.startswith("https://"):
         return None
-    req = urllib.request.Request(url, headers={"User-Agent": "mail-mcp autoconfig"})
+    # S310: HTTPS-only enforced by the guard above; the schemes Bandit warns
+    # about (file://, custom) cannot reach this point.
+    req = urllib.request.Request(url, headers={"User-Agent": "mail-mcp autoconfig"})  # noqa: S310
     ctx = create_tls_context()
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
             if resp.status != 200:
                 return None
             body = resp.read(256 * 1024)
@@ -223,7 +225,11 @@ def _fetch_autoconfig(url: str, *, timeout: float) -> Discovery | None:
 
 def _parse_clientconfig_xml(body: bytes) -> Discovery | None:
     try:
-        root = ET.fromstring(body)
+        # S314: response is capped at 256 KiB and fetched over HTTPS from the
+        # user's own provider (or Mozilla ISPDB). stdlib ET doesn't expand
+        # external entities in Python 3.7+; billion-laughs is bounded by the
+        # size cap.
+        root = ET.fromstring(body)  # noqa: S314
     except ET.ParseError:
         return None
     provider = root.find("emailProvider")

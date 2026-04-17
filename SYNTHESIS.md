@@ -1,128 +1,161 @@
 # Synthesis — mail-mcp Architecture Decisions
 
-Derived from parallel security audit of 9 popular email MCP servers (Apr 2026).
+_Design notes distilled from a parallel review of nine popular email MCP servers,
+conducted in April 2026. Upstream repos may have addressed issues called out
+below since; this document is a snapshot of what was true when the audit was
+read and is published as the reasoning trail behind `mail-mcp`'s design, not as
+a ranking of competitors._
 
-## Audit verdicts
+## Audit snapshot (April 2026)
 
-| Repo | Stars | Verdict | Key issue |
-|------|------:|---------|-----------|
-| ai-zerolab/mcp-email-server | 219 | DUDOSO | Gradio analytics phone-home, plaintext TOML sin 0600 |
-| marlinjai/email-mcp | 8 | DUDOSO | "Encrypted storage" teatral (key = hostname+username), OAuth sin state, client_secret embebido |
-| codefuturist/email-mcp | 31 | **SEGURO** | Mejor diseño: `safety/` module, read-only mode, destructiveHint |
-| yunfeizhu/mcp-mail-server | 25 | **INSEGURO** | `rejectUnauthorized:false` HARDCODED, lockfile a mirror no-oficial |
-| nikolausm/imap-mcp-server | 17 | DUDOSO | AES-CBC sin MAC, key plaintext junto al cipher, web wizard sin auth |
-| thegreystone/mcp-email | 8 | **SEGURO** | Prompt-injection warnings, saveDraft-first, forward sin body al LLM |
-| dominik1001/imap-mcp | 13 | **INSEGURO** | `rejectUnauthorized:false` + CRLF header injection + node-imap deprecated |
-| bradsjm/mail-imap-mcp-rs | 0 | **SEGURO** (gold standard) | Rust, SecretString, TLS forzado, write gating |
-| n24q02m/better-email-mcp | 7 | DUDOSO | Zero-config relay al dominio del autor + crypto en dep opaca |
+| Repo | Stars | Takeaway | Notes |
+|------|------:|----------|-------|
+| [ai-zerolab/mcp-email-server](https://github.com/ai-zerolab/mcp-email-server) | 219 | Mixed | Bundles a Gradio UI whose analytics default to on; TOML credentials file left at 0644 |
+| [marlinjai/email-mcp](https://github.com/marlinjai/email-mcp) | 8 | Mixed | "Encrypted" storage uses a key derived from `hostname + username`; OAuth flow lacks a `state` parameter; a shared OAuth client secret is shipped inside the binary |
+| [codefuturist/email-mcp](https://github.com/codefuturist/email-mcp) | 31 | **Strong reference** | Clean `safety/` module, read-only mode, correct `destructiveHint` annotations |
+| [yunfeizhu/mcp-mail-server](https://github.com/yunfeizhu/mcp-mail-server) | 25 | **Avoid** | `rejectUnauthorized:false` hard-coded; lockfile resolves to an unofficial mirror |
+| [nikolausm/imap-mcp-server](https://github.com/nikolausm/imap-mcp-server) | 17 | Mixed | AES-CBC without a MAC; master key stored next to the ciphertext; web setup wizard unauthenticated |
+| [thegreystone/mcp-email](https://github.com/thegreystone/mcp-email) | 8 | **Strong reference** | Prompt-injection warnings baked into tool descriptions, `saveDraft`-first write path, forward via `message/rfc822` so the body never hits the LLM |
+| [dominik1001/imap-mcp](https://github.com/dominik1001/imap-mcp) | 13 | **Avoid** | `rejectUnauthorized:false`, CRLF header injection path, built on deprecated `node-imap` |
+| [bradsjm/mail-imap-mcp-rs](https://github.com/bradsjm/mail-imap-mcp-rs) | 0 | **Strong reference** | Rust, `SecretString`, TLS enforced, clean write-gating |
+| [n24q02m/better-email-mcp](https://github.com/n24q02m/better-email-mcp) | 7 | Mixed | Default "zero-config" path routes credentials through a relay on the author's domain; crypto delegated to an opaque dependency |
 
-## Patterns to adopt (from the good ones)
+The longer explanation behind each verdict — what exact file and line drove the
+call, which audits the author and which do not, and what patterns we chose to
+inherit or reject — is what produced this document. It is not a league table.
+
+## Patterns we adopted (from the strong references)
 
 ### Credentials
-- **macOS Keychain / Linux libsecret / Windows Credential Manager** via Python `keyring`. Never plaintext files. Never env vars (leak in `ps`, logs, docker inspect).
-- Config file stores only `host / port / user / alias`. Password looked up by alias.
-- `SecretStr`-equivalent: never include password in repr/str/log output.
+- **macOS Keychain / Linux libsecret / Windows Credential Manager** via the
+  Python `keyring` package. Never plaintext files. Never env vars (leak in
+  `ps`, logs, `docker inspect`).
+- Config file stores only `host / port / user / alias`. The password is looked
+  up by alias at connect time.
+- `SecretStr`-equivalent discipline: never include the password in repr/str/log
+  output.
 - Config file written with `os.chmod(path, 0o600)`.
 
 ### Transport security
-- **TLS enforced by default**: IMAPS (993) with implicit TLS, SMTP (587) with `requireTLS`, or SMTPS (465) implicit.
-- `ssl.create_default_context()` — never `check_hostname=False`, never `verify_mode=CERT_NONE`.
-- Plaintext-fallback blocked unless explicit `MAIL_MCP_ALLOW_INSECURE_TLS=true` with stderr warning on startup.
+- **TLS enforced by default**: IMAPS (993) with implicit TLS, SMTP (587) with
+  `requireTLS`, or SMTPS (465) implicit.
+- `ssl.create_default_context()` (backed by the `certifi` CA bundle to
+  sidestep the python.org-on-macOS "no cert bundle" footgun) — never
+  `check_hostname=False`, never `verify_mode=CERT_NONE`.
+- Plaintext-fallback blocked. No runtime bypass knob.
 
-### IMAP injection defense
-- IMAP SEARCH via structured criteria (dicts/objects), never string concatenation of user input.
-- Control-char rejection: `\r`, `\n`, `\0` in any header-bound field → reject with error.
-- Email header values escaped via `email.message` / `email.headerregistry` (RFC 2047 encoding for non-ASCII).
+### IMAP injection defence
+- IMAP SEARCH via structured criteria (dicts/objects), never string
+  concatenation of user input.
+- Control-char rejection: `\r`, `\n`, `\0` in any header-bound field → reject
+  with error.
+- Email header values are escaped via `email.message` /
+  `email.headerregistry` (RFC 2047 encoding for non-ASCII).
 
 ### Header / CRLF injection
-- **All** header-bound strings validated against `/[\r\n\0]/` before use.
-- MIME messages built with `email.message.EmailMessage` stdlib (handles headers correctly), never raw `join("\r\n", ...)`.
+- Every header-bound string is validated against `/[\r\n\0]/` before use.
+- MIME messages are built with `email.message.EmailMessage` from the stdlib —
+  it handles headers correctly — never `"\r\n".join(...)`.
 
 ### Tool safety
-- **`destructive: true` annotation** on: `send_email`, `reply_email`, `forward_email`, `delete_email`, `bulk_delete`, `move_email`, `create_mailbox`, `delete_mailbox`.
-- **`readOnly: true`** on: `list_*`, `search_*`, `get_*`.
-- **`saveDraft` is the preferred write path**. `send_email` exists but requires `confirm=true` param + `MAIL_MCP_SEND_ENABLED=true` env.
-- **Write-gating**: `MAIL_MCP_WRITE_ENABLED=false` by default → write tools are **not registered** at all (not just runtime-flagged).
-- **Forward via `message/rfc822` attachment**, never re-parsing the body through LLM context.
+- `destructive: true` annotation on `send_email`, `move_email`,
+  `delete_emails`; `readOnly: true` on `list_*` / `search_*` / `get_*`.
+- `save_draft` is the preferred write path. `send_email` additionally requires
+  `MAIL_MCP_SEND_ENABLED=true` plus `confirm=true` on the tool call.
+- Write-gating happens by **non-registration**: when `MAIL_MCP_WRITE_ENABLED`
+  is unset, write tools are not advertised to the LLM at all, not merely
+  flagged at runtime.
+- Forward via `message/rfc822` attachment (patterned after thegreystone) —
+  planned for v0.2.2 so the forwarded content never re-enters the LLM context.
 
 ### Prompt-injection hygiene
-- Email bodies wrapped in `<untrusted_email_content>...</untrusted_email_content>` with explicit warning prefix.
-- Closing-tag sanitization: strip occurrences of `</untrusted_email_content>` from email body before wrapping.
-- Zero-width char stripping (U+200B, U+200C, U+FEFF, U+00AD, etc.) from HTML-to-text conversion.
-- URI scheme filter: allow only `http`, `https`, `mailto`, `tel`. Block `javascript`, `data`, `file`, `vbscript`, `jar`.
+- Email bodies are wrapped in `<untrusted_email_content>…</untrusted_email_content>`
+  with an explicit warning prefix.
+- Closing-tag sanitisation: occurrences of the closing tag inside the body are
+  escaped so an attacker cannot break out of the envelope.
+- Zero-width character stripping (U+200B, U+200C, U+FEFF, U+00AD, …) on
+  HTML-to-text conversion.
+- URI scheme filter: allow only `http`, `https`, `mailto`, `tel`; block
+  `javascript`, `data`, `file`, `vbscript`, `jar`.
 
 ### Bounded outputs
-- `body_max_chars`: default 16_000, configurable ≤ 64_000.
-- `attachment_max_bytes`: default 25 MiB, configurable.
-- `batch_max_uids`: default 100, hard cap 500.
-- `search_result_limit`: default 50, hard cap 500.
+- `body_max_chars` default 16 000, configurable up to 64 000.
+- `attachment_max_bytes` default 25 MiB, configurable.
+- Batch operations capped at 100 UIDs.
+- Search result list capped at 500.
 
 ### Filesystem safety
-- Attachment downloads only under `~/Downloads/mail-mcp/<account_alias>/`, resolved + checked via `path.is_relative_to(base)`.
-- Reject `..`, symlinks, absolute paths outside the whitelist.
-- File mode 0o600 for downloads with sensitive content, 0o700 for directory.
+- Attachment downloads anchored under `~/Downloads/mail-mcp/<account_alias>/`,
+  resolved and checked via `path.is_relative_to(base)`.
+- `..`, absolute paths, and escape-via-symlink rejected.
+- File mode `0o600` for downloads; directory `0o700`.
 
 ### Logging discipline
-- Never log: passwords, access tokens, email bodies, email addresses (use `account_alias`).
-- Audit log (append-only JSONL) with explicit redaction set: `{password, access_token, refresh_token, client_secret, body, body_html, body_text, content_base64, authorization}`.
-- Errors surfaced to LLM: only `{message, code}`, never the full error object (libraries leak `LOGIN` strings in errors).
+- Never log passwords, access tokens, email bodies, or email addresses (use
+  `account_alias` instead).
+- Errors surfaced to the LLM carry only `{type, code, message, hint,
+  retryable}` — never the raw exception object, which can carry server trace
+  material.
 
 ### Zero outbound network beyond IMAP/SMTP
 - No telemetry, no update checks, no analytics, no relay.
-- Hardcoded allowlist of protocols: only `imaplib`/`imapclient` to user-configured host, only `smtplib` to user-configured host.
-- No import of `requests`, `httpx`, `urllib3` in the runtime path.
+- Only `imapclient` (to the user-configured host) and `smtplib` (to the
+  user-configured host) open outbound sockets at runtime. `mail-mcp init`
+  additionally performs autoconfig lookups over HTTPS — documented in
+  `SECURITY.md`.
 
 ### Package / supply chain
-- No `postinstall`/`install` scripts (Python doesn't have them, but avoid `setup.py` with network I/O too).
-- Pin all deps with exact versions + hashes in `uv.lock` / `requirements.lock`.
-- Publish to PyPI with `provenance` (trusted publisher via GitHub Actions OIDC).
-- Minimal dep tree: stdlib + `imapclient` + `keyring` + `mcp` SDK. No gradio, no express, no web UI.
+- No `postinstall` scripts (Python doesn't have them, but we also avoid
+  `setup.py` with network I/O).
+- Minimal dep tree: `mcp`, `imapclient`, `keyring`, `pydantic`, `certifi`.
+  No Gradio, no Express, no web UI.
+- `pip install mail-mcp[cli]` additionally pulls `questionary`, `rich` and
+  `dnspython` only for the interactive setup path.
 
 ## Architecture
 
-**Language**: **Python 3.11+** — rationale:
-- Official MCP SDK mature.
-- `imapclient` is well-maintained, typed, structured-search API.
-- `keyring` package has first-class macOS/Linux/Windows keyring support.
-- `email.message` stdlib is battle-tested for MIME correctness (avoids CRLF injection by design).
-- Lower bar for contributors (vs. Rust/Java).
+**Language**: Python 3.11+.
+- Official MCP SDK maturity.
+- `imapclient` is well-maintained, typed, and exposes a structured search API.
+- `keyring` has first-class macOS/Linux/Windows support.
+- `email.message` is battle-tested for MIME correctness (avoids CRLF injection
+  by construction).
+- Lower bar for contributors than Rust or Java.
 
-**Transport**: stdio only (v0.1). HTTP/SSE not implemented — reduces attack surface.
+**Transport**: stdio only in v0.x. HTTP/SSE is deliberately off the table until
+there is a concrete reason.
 
-**Layout**:
+**Layout** (representative — see the repo for the authoritative tree):
+
 ```
 mail-mcp/
 ├── pyproject.toml
 ├── src/mail_mcp/
 │   ├── __init__.py
-│   ├── __main__.py       # entry point
+│   ├── __main__.py       # CLI entry point
 │   ├── server.py         # MCP server wiring
 │   ├── config.py         # alias → host/port/user; passwords via keyring
 │   ├── keyring_store.py  # keyring-based credential access
-│   ├── imap_client.py    # imapclient wrapper + connection pool
+│   ├── imap_client.py    # imapclient wrapper
 │   ├── smtp_client.py    # smtplib wrapper
+│   ├── autoconfig.py     # 5-tier autodiscovery (embedded → XML → ISPDB → MX → SRV → heuristic)
+│   ├── wizard.py         # interactive `mail-mcp init` (requires [cli] extras)
+│   ├── doctor.py         # `mail-mcp doctor` diagnostic report
 │   ├── safety/
+│   │   ├── tls.py        # TLS context with certifi bundle
 │   │   ├── validation.py # CRLF reject, control-char strip, IMAP escape
-│   │   ├── redaction.py  # log redaction
-│   │   ├── guards.py     # <untrusted_email_content> wrapper + XPIA
+│   │   ├── redaction.py  # log/error redaction
+│   │   ├── guards.py     # untrusted-content wrapper + header sanitiser
 │   │   └── paths.py      # filesystem allowlist
 │   └── tools/
 │       ├── read.py       # list_folders, search, get_email, attachments
-│       ├── drafts.py     # save_draft, reply_draft (primary write path)
-│       ├── send.py       # send_email (gated, confirm=true required)
+│       ├── drafts.py     # save_draft (v0.2.2 adds reply_draft / forward_draft)
+│       ├── send.py       # send_email (gated; confirm=true required)
 │       ├── organize.py   # move, mark, delete (gated)
-│       └── schemas.py    # pydantic models for tool inputs
+│       └── schemas.py    # pydantic input schemas
 ├── tests/
-│   ├── test_validation.py
-│   ├── test_redaction.py
-│   ├── test_tools_smoke.py
-│   └── test_crlf_injection.py
-├── README.md
-├── SECURITY.md
-├── LICENSE (MIT)
-└── docs/
-    ├── images/ (hero, architecture)
-    └── THREAT_MODEL.md
+├── docs/
+└── LICENSE (MIT)
 ```
 
 ## Threat model (short form)
@@ -133,21 +166,22 @@ In-scope:
 - MITM on IMAP/SMTP.
 - CRLF / header injection from LLM input.
 - Path traversal on attachment save.
-- Exfiltration via `forward_email` / `send_email` to attacker-controlled address.
+- Exfiltration via `send_email` (and, once shipped, `forward_draft`) to an
+  attacker-controlled address.
 
-Out-of-scope:
-- LLM hallucinating content (user's responsibility to review drafts).
+Out of scope:
+- LLM hallucinating content (the user reviews drafts).
 - Compromised host OS (all bets off).
-- Denial of service against the user's IMAP server.
+- Denial of service against the user's own IMAP server.
 
-## Non-goals for v0.1
+## Non-goals (confirmed in every release)
 
-- OAuth2 (add in v0.2).
-- Multiple accounts (single account first).
-- HTTP transport.
+- OAuth2 — deferred to v0.2.2 for Microsoft 365; Gmail continues to delegate
+  to a local proxy or user-owned Google Cloud project.
+- HTTP/SSE transport.
 - Web UI.
 - Scheduler / auto-send.
 - Calendar integration.
-- PDF extraction (deferred — all audits showed deps here are risky).
+- PDF text extraction (every audited PDF library had CVE history).
 
 Ship simple, secure, auditable. Expand from a solid base.

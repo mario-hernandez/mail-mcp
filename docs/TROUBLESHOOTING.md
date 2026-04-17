@@ -80,6 +80,8 @@ hints to pick the real mailbox names.
 
 ## Reporting a bug
 
-Run `mail-mcp doctor` and paste the whole output into your issue. It
-contains no secrets — passwords, message bodies and tokens are never emitted
-by that command.
+Run `mail-mcp doctor` and include the output in your issue. Passwords,
+message bodies and tokens are never emitted by that command. **Do redact
+your email address and your IMAP/SMTP hostnames** before pasting the report
+into a public tracker — that information is shown in the "config" section
+and is fine in a private support thread but unnecessary in public.

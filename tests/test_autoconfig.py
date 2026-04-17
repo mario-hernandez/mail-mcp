@@ -27,6 +27,11 @@ def test_embedded_ionos():
     assert d.smtp.host == "smtp.ionos.es"
 
 
+def test_embedded_mariohernandez_removed():
+    """Ensure no personal-domain shortcut leaked back into the embedded table."""
+    assert "mariohernandez.es" not in autoconfig.PROVIDERS
+
+
 def test_proton_needs_bridge_flag():
     d = autoconfig.discover("somebody@proton.me")
     assert d.source == "proton-bridge"
@@ -107,7 +112,7 @@ def test_mx_preset_fallback(monkeypatch):
             imap=autoconfig.PROVIDERS["gmail.com"].imap,
             smtp=autoconfig.PROVIDERS["gmail.com"].smtp,
             source="mx-preset:gmail.com",
-            notes=[f"MX record 'aspmx.l.google.com' matched provider 'gmail.com'."],
+            notes=["MX record 'aspmx.l.google.com' matched provider 'gmail.com'."],
         )
 
     monkeypatch.setattr(autoconfig, "_try_mx_preset", fake_mx)
