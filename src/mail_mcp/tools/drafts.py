@@ -21,12 +21,14 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         from_addr=acct.email,
         to=params.to,
         cc=params.cc,
-        bcc=params.bcc,
         subject=params.subject,
         body_text=params.body,
         in_reply_to=params.in_reply_to,
         references=params.references,
     )
+    # BCC is deliberately not persisted on a draft: the user's mail client
+    # will re-enter BCC at send time. Drafts with BCC headers break some
+    # providers' threading.
     with imap_client.connect(acct, password) as c:
         draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
     return {

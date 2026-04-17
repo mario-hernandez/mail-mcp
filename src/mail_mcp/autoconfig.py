@@ -104,9 +104,6 @@ _register("mailbox.org",     "imap.mailbox.org",       993, "ssl",  "smtp.mailbo
 _register("yandex.com",      "imap.yandex.com",        993, "ssl",  "smtp.yandex.com",         465, "ssl")
 _register("yandex.ru",       "imap.yandex.ru",         993, "ssl",  "smtp.yandex.ru",          465, "ssl")
 
-# Personal shortcut: custom domain hosted on IONOS.
-_register("mariohernandez.es", "imap.ionos.es",        993, "ssl",  "smtp.ionos.es",           587, "starttls")
-
 
 _PROTON_DOMAINS = {"proton.me", "protonmail.com", "protonmail.ch", "pm.me"}
 

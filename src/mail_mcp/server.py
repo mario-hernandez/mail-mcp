@@ -10,10 +10,12 @@ the prompt-injection surface.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import sys
+import time
 from typing import Any
 
 from mcp.server import Server
@@ -194,19 +196,86 @@ def build_server(cfg: Config | None = None) -> Server:
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         entry = tool_map.get(name)
         if entry is None:
-            payload = {"error": sanitize_error(RuntimeError(f"unknown tool {name!r}"))}
+            payload = {
+                "error": {
+                    **sanitize_error(RuntimeError(f"unknown tool {name!r}")),
+                    "code": "UNKNOWN_TOOL",
+                }
+            }
             return [TextContent(type="text", text=json.dumps(payload))]
         schema, handler = entry
+        started = time.perf_counter()
         try:
             parsed = schema.model_validate(arguments or {})
-            result = handler(cfg, parsed)
+            # Hand the synchronous IMAP/SMTP work off to a worker thread so
+            # the stdio event loop can dispatch other tool calls in parallel.
+            result = await asyncio.to_thread(handler, cfg, parsed)
         except Exception as exc:  # noqa: BLE001 - surfaced to caller sanitised
-            log.error("tool %s failed: %s", name, exc.__class__.__name__)
-            payload = {"error": sanitize_error(exc)}
+            duration = int((time.perf_counter() - started) * 1000)
+            log.warning(
+                "tool=%s outcome=error duration_ms=%d type=%s",
+                name, duration, exc.__class__.__name__,
+            )
+            payload = {"error": _classify(exc)}
             return [TextContent(type="text", text=json.dumps(payload))]
+        duration = int((time.perf_counter() - started) * 1000)
+        log.info("tool=%s outcome=ok duration_ms=%d", name, duration)
         return [TextContent(type="text", text=json.dumps(result, default=str))]
 
     return server
+
+
+def _classify(exc: BaseException) -> dict[str, Any]:
+    """Tag an exception with a stable error code and a remediation hint.
+
+    The LLM sees the returned dict inside ``{"error": ...}``. A stable
+    ``code`` lets agents branch programmatically without sniffing free-text
+    messages, and ``hint`` gives them a concrete next action to try.
+    """
+    base = sanitize_error(exc)
+    cls = exc.__class__.__name__
+    lower = str(exc).lower()
+    code = "INTERNAL_ERROR"
+    hint: str | None = None
+    retryable = False
+
+    if cls in {"SendDisabled", "OperationDisabled"}:
+        code = "PERMISSION_DENIED"
+        hint = (
+            "This tool is gated behind an environment flag. "
+            "Start the server with the required env var, e.g. "
+            "MAIL_MCP_WRITE_ENABLED=true, and re-register the MCP client."
+        )
+    elif cls == "ValidationError" or "validation" in lower:
+        code = "VALIDATION_ERROR"
+        hint = "Review the tool schema and resubmit with corrected arguments."
+    elif "authentication" in lower or "badcredentials" in lower or cls in {"LoginError", "SMTPAuthenticationError"}:
+        code = "AUTH_FAILED"
+        hint = (
+            "Credentials were rejected. For Gmail / iCloud / Outlook.com "
+            "generate an app-specific password; re-run `mail-mcp init` if "
+            "unsure."
+        )
+    elif "certificate" in lower or "ssl" in lower or "tls" in lower:
+        code = "TLS_ERROR"
+        hint = (
+            "The server's TLS certificate could not be validated. Fix the "
+            "certificate chain on the server side; mail-mcp does not offer "
+            "a verification bypass."
+        )
+    elif "timeout" in lower or cls in {"TimeoutError", "socket.timeout"}:
+        code = "TIMEOUT"
+        hint = "The network call timed out. Retry; if it persists the server may be offline."
+        retryable = True
+    elif "not found" in lower or cls == "RuntimeError" and "uid" in lower:
+        code = "NOT_FOUND"
+        hint = "The UID or mailbox does not exist. Call search_emails or list_folders first."
+    elif "unreachable" in lower or "resolve" in lower or "nodename" in lower:
+        code = "NETWORK_UNREACHABLE"
+        hint = "Host could not be resolved or reached. Check connectivity and host configuration."
+        retryable = True
+
+    return {**base, "code": code, "hint": hint, "retryable": retryable}
 
 
 async def run_stdio() -> None:
@@ -215,7 +284,18 @@ async def run_stdio() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    log.info("mail-mcp %s starting (stdio)", __version__)
-    server = build_server()
+    cfg = load()
+    try:
+        default_alias = cfg.account().alias
+    except RuntimeError:
+        default_alias = "(none)"
+    log.warning(
+        "mail-mcp %s ready on stdio | account=%s | write=%s | send=%s",
+        __version__,
+        default_alias,
+        write_enabled(),
+        send.is_enabled(),
+    )
+    server = build_server(cfg=cfg)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())

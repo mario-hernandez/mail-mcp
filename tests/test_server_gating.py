@@ -1,7 +1,3 @@
-import os
-
-import pytest
-
 from mail_mcp import server as server_module
 
 

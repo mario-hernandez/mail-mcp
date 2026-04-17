@@ -150,8 +150,18 @@ def run() -> int:
         smtp_starttls=(disc.smtp.security == "starttls"),
     )
 
-    imap_ok, imap_err = _test_imap(console, account, password)
+    imap_ok, imap_err, specials = _test_imap(console, account, password)
     smtp_ok, smtp_err = _test_smtp(console, account, password)
+
+    if specials:
+        drafts = specials.get("\\Drafts")
+        trash = specials.get("\\Trash")
+        if drafts and drafts != account.drafts_mailbox:
+            console.print(f"  [dim]detected Drafts mailbox: {drafts}[/dim]")
+            account = account.model_copy(update={"drafts_mailbox": drafts})
+        if trash and trash != account.trash_mailbox:
+            console.print(f"  [dim]detected Trash mailbox: {trash}[/dim]")
+            account = account.model_copy(update={"trash_mailbox": trash})
 
     if not (imap_ok and smtp_ok):
         if imap_err:
@@ -288,20 +298,23 @@ def _prompt_manual(questionary: Any, console: Any) -> Discovery | None:
     )
 
 
-def _test_imap(console: Any, account: AccountModel, password: str) -> tuple[bool, str | None]:
+def _test_imap(
+    console: Any, account: AccountModel, password: str
+) -> tuple[bool, str | None, dict[str, str]]:
     with console.status("[cyan]Testing IMAP login…", spinner="dots"):
         try:
             with imap_client.connect(account, password) as c:
                 imap_client.list_folders(c)
+                specials = imap_client.detect_special_mailboxes(c)
         except Exception as exc:  # noqa: BLE001
             console.print(
                 f"  IMAP  : [red]✗[/red]  {account.imap_host}:{account.imap_port}"
             )
-            return False, str(exc)
+            return False, str(exc), {}
     console.print(
         f"  IMAP  : [green]✓[/green]  {account.imap_host}:{account.imap_port}"
     )
-    return True, None
+    return True, None, specials
 
 
 def _test_smtp(console: Any, account: AccountModel, password: str) -> tuple[bool, str | None]:

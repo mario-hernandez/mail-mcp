@@ -45,7 +45,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         raise SendDisabled("send_email requires the caller to pass confirm=true.")
     acct = cfg.account(params.account)
     password = get_password(acct.alias, acct.email)
-    msg = smtp_client.build_message(
+    msg, bcc = smtp_client.build_message_with_bcc(
         from_addr=acct.email,
         to=params.to,
         cc=params.cc,
@@ -55,7 +55,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         in_reply_to=params.in_reply_to,
         references=params.references,
     )
-    message_id = smtp_client.send(acct, password, msg)
+    message_id = smtp_client.send(acct, password, msg, bcc=bcc)
     return {
         "account": acct.alias,
         "message_id": message_id,

@@ -144,6 +144,32 @@ args    = ["serve"]
 MAIL_MCP_WRITE_ENABLED = "true"   # optional
 ```
 
+## Provider support
+
+| Provider | Works with `mail-mcp init` | Notes |
+|----------|---------------------------|-------|
+| IONOS, Fastmail, mailbox.org, GMX, Web.de, Zoho, Yandex | ✅ | Native password or app password |
+| Gmail | ✅ with app password | Enable 2FA, then generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) |
+| iCloud | ✅ with app password | Required; generate at appleid.apple.com |
+| Outlook.com personal | ✅ with app password | Generate at account.live.com |
+| Microsoft 365 (tenant managed) | ⚠️ basic-auth disabled | OAuth2 is planned for v0.2.2. Use `email-oauth2-proxy` locally as a stopgap. |
+| Proton Mail | ✅ via Bridge | Run Proton Bridge; `mail-mcp init` detects the `proton.me` domain and points at `127.0.0.1:1143` |
+| Custom domain on any of the above | ✅ | Autoconfig resolves via MX / SRV / `autoconfig.<domain>` |
+
+See [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) for the common
+failures and their fixes.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MAIL_MCP_WRITE_ENABLED` | `false` | Register `move_email`, `mark_emails`, `delete_emails`. |
+| `MAIL_MCP_SEND_ENABLED` | `false` | Register `send_email` (additionally requires write). |
+| `MAIL_MCP_ALLOW_PERMANENT_DELETE` | `false` | Allow `permanent=true` on `delete_emails`. |
+| `MAIL_MCP_LOG_LEVEL` | `WARNING` | Server log level on stderr (`DEBUG` / `INFO` / `WARNING` / `ERROR`). |
+| `MAIL_MCP_IMAP_CONNECT_TIMEOUT` | `15` | IMAP TCP + TLS handshake timeout, seconds. |
+| `MAIL_MCP_IMAP_READ_TIMEOUT` | `30` | IMAP socket read timeout, seconds. |
+
 ## Example prompts
 
 Once connected, talk to your AI assistant in plain language:

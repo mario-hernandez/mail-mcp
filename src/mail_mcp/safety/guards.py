@@ -33,3 +33,25 @@ def wrap_untrusted(content: str) -> str:
     cleaned = strip_zero_width(content or "")
     safe = cleaned.replace(CLOSE_TAG, "</untrusted_email_content_escaped>")
     return f"{WARNING}\n{OPEN_TAG}\n{safe}\n{CLOSE_TAG}"
+
+
+_MAX_HEADER_SAFE_LEN = 998
+
+
+def sanitize_header(value: str | None, *, max_length: int = _MAX_HEADER_SAFE_LEN) -> str:
+    """Neutralise a header-derived string destined for the LLM context.
+
+    Headers (``Subject``, ``From``, filename, ...) are attacker-controlled.
+    They never reach protocol commands — the threat is that an LLM reading
+    them treats them as instructions. Mitigation: strip zero-width characters
+    used for homoglyph injection, replace CR/LF so a forged header cannot
+    look like a new envelope, and cap length so a multi-kilobyte subject
+    cannot push the body out of context.
+    """
+    if not value:
+        return ""
+    cleaned = strip_zero_width(value)
+    cleaned = cleaned.replace("\r", " ").replace("\n", " ").replace("\x00", "")
+    if len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 1] + "\u2026"
+    return cleaned

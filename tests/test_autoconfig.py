@@ -20,8 +20,8 @@ def test_embedded_icloud_alias():
     assert d.imap.host == "imap.mail.me.com"
 
 
-def test_embedded_custom_domain_on_ionos():
-    d = autoconfig.discover("mario@mariohernandez.es")
+def test_embedded_ionos():
+    d = autoconfig.discover("someone@ionos.es")
     assert d.source == "embedded"
     assert d.imap.host == "imap.ionos.es"
     assert d.smtp.host == "smtp.ionos.es"

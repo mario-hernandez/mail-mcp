@@ -19,20 +19,39 @@ class _AccountScoped(BaseModel):
 
 
 class ListFoldersInput(_AccountScoped):
-    pass
+    pattern: str | None = Field(
+        default=None,
+        description="IMAP LIST pattern. Defaults to '*' (everything). Use '%' to list only top level, 'INBOX/%' to list under INBOX, etc.",
+        max_length=255,
+    )
+    subscribed_only: bool = Field(
+        default=False,
+        description="If true, list only mailboxes the user has subscribed to.",
+    )
 
 
 class SearchInput(_AccountScoped):
-    mailbox: str = Field(default="INBOX", max_length=255)
-    limit: int = Field(default=50, ge=1, le=500)
-    unseen: bool | None = None
-    flagged: bool | None = None
-    from_: str | None = Field(default=None, alias="from")
-    to: str | None = None
-    subject: str | None = None
-    body_contains: str | None = None
-    since: date | None = None
-    before: date | None = None
+    mailbox: str = Field(
+        default="INBOX",
+        description="IMAP mailbox to search in.",
+        max_length=255,
+    )
+    limit: int = Field(
+        default=50, ge=1, le=500,
+        description="Maximum number of headers to return in this page.",
+    )
+    offset: int = Field(
+        default=0, ge=0, le=10_000,
+        description="Skip this many matches before returning; use for pagination.",
+    )
+    unseen: bool | None = Field(default=None, description="True for UNSEEN, False for SEEN.")
+    flagged: bool | None = Field(default=None, description="True for FLAGGED, False for UNFLAGGED.")
+    from_: str | None = Field(default=None, alias="from", description="Match the From header.")
+    to: str | None = Field(default=None, description="Match the To header.")
+    subject: str | None = Field(default=None, description="Match a substring in the Subject.")
+    body_contains: str | None = Field(default=None, description="Match a substring in the body.")
+    since: date | None = Field(default=None, description="Only messages received on or after this date.")
+    before: date | None = Field(default=None, description="Only messages received before this date.")
 
     model_config = {"populate_by_name": True}
 

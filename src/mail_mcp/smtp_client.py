@@ -34,7 +34,6 @@ def build_message(
     subject: str,
     body_text: str,
     cc: list[str] | None = None,
-    bcc: list[str] | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
 ) -> EmailMessage:
@@ -43,6 +42,9 @@ def build_message(
     All header-destined fields pass through :func:`validate_header_value`, which
     rejects CR/LF and other control characters before :class:`EmailMessage`
     performs its own header validation.
+
+    BCC is handled separately by :func:`build_message_with_bcc`; the message
+    returned here never carries a ``Bcc`` header.
     """
     validate_email_address(from_addr, field="from")
     if not to:
@@ -51,8 +53,6 @@ def build_message(
         validate_email_address(addr, field="to")
     for addr in cc or []:
         validate_email_address(addr, field="cc")
-    for addr in bcc or []:
-        validate_email_address(addr, field="bcc")
     validate_header_value(subject, field="subject")
     if in_reply_to:
         validate_header_value(in_reply_to, field="in_reply_to")
@@ -66,18 +66,46 @@ def build_message(
         msg["Cc"] = ", ".join(cc)
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid()
+    # Match the Message-ID domain to the From header so threaded replies track
+    # correctly and IDs don't leak container hostnames (e.g. ``*.docker.local``).
+    msg["Message-ID"] = make_msgid(domain=from_addr.rsplit("@", 1)[1])
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = " ".join(references)
     msg.set_content(body_text)
-    # BCC is attached for delivery fan-out but not added as a header.
-    if bcc:
-        msg["Bcc"] = ", ".join(bcc)
-        del msg["Bcc"]
-        msg._bcc = list(bcc)  # type: ignore[attr-defined]
     return msg
+
+
+def build_message_with_bcc(
+    *,
+    from_addr: str,
+    to: list[str],
+    subject: str,
+    body_text: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    in_reply_to: str | None = None,
+    references: list[str] | None = None,
+) -> tuple[EmailMessage, list[str]]:
+    """Assemble a message and return it together with the BCC list.
+
+    BCC is never added as a header (that would leak blind recipients);
+    instead callers pass the returned list to :func:`send` as extra envelope
+    recipients. ``build_message`` alone is safe to ``bytes()`` into a draft.
+    """
+    for addr in bcc or []:
+        validate_email_address(addr, field="bcc")
+    msg = build_message(
+        from_addr=from_addr,
+        to=to,
+        subject=subject,
+        body_text=body_text,
+        cc=cc,
+        in_reply_to=in_reply_to,
+        references=references,
+    )
+    return msg, list(bcc or [])
 
 
 def test_login(account: AccountModel, password: str, *, timeout: float = 15.0) -> None:
@@ -100,18 +128,23 @@ def test_login(account: AccountModel, password: str, *, timeout: float = 15.0) -
             server.login(account.email, password)
 
 
-def send(account: AccountModel, password: str, msg: EmailMessage) -> str:
+def send(
+    account: AccountModel,
+    password: str,
+    msg: EmailMessage,
+    *,
+    bcc: list[str] | None = None,
+) -> str:
     """Deliver ``msg`` via SMTP, enforcing TLS.
 
-    Returns the message's ``Message-ID`` header so callers can log it or link
-    it with follow-up tool calls.
+    ``bcc`` entries are added to the envelope recipients but never appear as
+    a header. Returns the message's ``Message-ID``.
     """
     ctx = ssl.create_default_context()
-    bcc: list[str] = getattr(msg, "_bcc", [])
     recipients = [
         *[a.strip() for a in msg.get("To", "").split(",") if a.strip()],
         *[a.strip() for a in msg.get("Cc", "").split(",") if a.strip()],
-        *bcc,
+        *(bcc or []),
     ]
     if account.smtp_starttls:
         with smtplib.SMTP(account.smtp_host, account.smtp_port, timeout=30) as server:

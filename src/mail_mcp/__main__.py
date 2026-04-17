@@ -8,7 +8,7 @@ import getpass
 import sys
 
 from . import __version__
-from .config import AccountModel, Config, ConfigModel, load, save
+from .config import AccountModel, ConfigModel, load, save
 from .keyring_store import get_password, set_password
 from .server import run_stdio
 
@@ -26,6 +26,12 @@ def _cmd_init(_args: argparse.Namespace) -> int:
     except WizardError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import run
+
+    return run(argv=["--connect"] if args.connect else [])
 
 
 def _cmd_add_account(args: argparse.Namespace) -> int:
@@ -83,15 +89,38 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mail-mcp", description="mail-mcp CLI")
+    parser = argparse.ArgumentParser(
+        prog="mail-mcp",
+        description="mail-mcp CLI",
+        epilog=(
+            "Environment variables:\n"
+            "  MAIL_MCP_WRITE_ENABLED=true          enable move/mark/delete tools\n"
+            "  MAIL_MCP_SEND_ENABLED=true           enable send_email (requires write)\n"
+            "  MAIL_MCP_ALLOW_PERMANENT_DELETE=true allow expunge instead of trash\n"
+            "  MAIL_MCP_LOG_LEVEL=INFO              default WARNING; use DEBUG for tracing\n"
+            "  MAIL_MCP_IMAP_CONNECT_TIMEOUT=15     IMAP TCP/TLS connect timeout (seconds)\n"
+            "  MAIL_MCP_IMAP_READ_TIMEOUT=30        IMAP socket read timeout (seconds)\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--version", action="version", version=f"mail-mcp {__version__}")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("serve", help="run the MCP server on stdio").set_defaults(func=_cmd_serve)
     sub.add_parser(
         "init",
         help="interactive setup wizard (requires 'mail-mcp[cli]' extras)",
     ).set_defaults(func=_cmd_init)
+    doctor = sub.add_parser(
+        "doctor",
+        help="print a self-diagnostic report",
+    )
+    doctor.add_argument(
+        "--connect",
+        action="store_true",
+        help="also authenticate against each account's IMAP+SMTP servers",
+    )
+    doctor.set_defaults(func=_cmd_doctor)
 
     add = sub.add_parser("add-account", help="add or update an account")
     add.add_argument("alias")
@@ -119,6 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if not getattr(args, "cmd", None):
+        parser.print_help()
+        raise SystemExit(0)
     raise SystemExit(args.func(args))
 
 

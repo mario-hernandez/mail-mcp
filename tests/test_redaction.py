@@ -1,4 +1,4 @@
-from mail_mcp.safety.redaction import REDACTED, redact, sanitize_error
+from mail_mcp.safety.redaction import REDACTED, redact, redact_text, sanitize_error
 
 
 def test_redact_shallow():
@@ -20,11 +20,44 @@ def test_redact_nested():
     assert out["list"][1]["ok"] == "ok"
 
 
-def test_sanitize_error_scrubs_login():
-    err = RuntimeError("LOGIN user@x.com s3cr3t")
+def test_sanitize_error_scrubs_quoted_login_trace():
+    # Only the quoted-arguments form (typical of debug dumps) is scrubbed —
+    # the bare ``LOGIN user pass`` form from error text is ambiguous because
+    # it collides with server messages like ``LOGIN failed``.
+    err = RuntimeError('LOGIN "alice@example.com" "s3cr3t"')
     out = sanitize_error(err)
     assert "s3cr3t" not in out["message"]
     assert out["type"] == "RuntimeError"
+
+
+def test_sanitize_error_scrubs_password_kv():
+    err = RuntimeError("request failed password=hunter2")
+    out = sanitize_error(err)
+    assert "hunter2" not in out["message"]
+
+
+def test_sanitize_error_keeps_authenticationfailed_code():
+    """Regression: previous scrubber truncated any message containing 'LOGIN '."""
+    err = RuntimeError("LOGIN failed: AUTHENTICATIONFAILED")
+    out = sanitize_error(err)
+    assert "AUTHENTICATIONFAILED" in out["message"]
+
+
+def test_sanitize_error_keeps_badcredentials_code():
+    err = RuntimeError("SMTPAuthenticationError 535 5.7.8 BADCREDENTIALS")
+    out = sanitize_error(err)
+    assert "BADCREDENTIALS" in out["message"]
+
+
+def test_redact_text_masks_emails_and_hosts():
+    out = redact_text("cannot resolve imap.example.com for alice@example.com")
+    assert "alice@example.com" not in out
+    assert "imap.example.com" not in out
+
+
+def test_redact_text_does_not_mask_plain_words():
+    out = redact_text("AUTHENTICATIONFAILED on server side")
+    assert "AUTHENTICATIONFAILED" in out
 
 
 def test_sanitize_error_truncates():

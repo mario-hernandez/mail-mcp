@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import os
 import ssl
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -26,7 +27,7 @@ from datetime import date, datetime
 from email.message import EmailMessage
 from typing import Any
 
-from imapclient import IMAPClient
+from imapclient import IMAPClient, SocketTimeout
 
 from .config import AccountModel
 from .safety.validation import (
@@ -40,6 +41,9 @@ from .safety.validation import (
 MAX_BODY_CHARS = 16_000
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MAX_BATCH_UIDS = 100
+
+_IMAP_CONNECT_TIMEOUT = float(os.environ.get("MAIL_MCP_IMAP_CONNECT_TIMEOUT", "15"))
+_IMAP_READ_TIMEOUT = float(os.environ.get("MAIL_MCP_IMAP_READ_TIMEOUT", "30"))
 
 
 @dataclass
@@ -76,7 +80,13 @@ def connect(account: AccountModel, password: str):
     ctx = ssl.create_default_context()
     if not account.imap_use_ssl:
         raise ValidationError("IMAP connections must use SSL/TLS (imap_use_ssl=true)")
-    client = IMAPClient(account.imap_host, port=account.imap_port, ssl=True, ssl_context=ctx)
+    client = IMAPClient(
+        account.imap_host,
+        port=account.imap_port,
+        ssl=True,
+        ssl_context=ctx,
+        timeout=SocketTimeout(connect=_IMAP_CONNECT_TIMEOUT, read=_IMAP_READ_TIMEOUT),
+    )
     try:
         client.login(account.email, password)
         yield client
@@ -87,11 +97,65 @@ def connect(account: AccountModel, password: str):
             pass
 
 
-def list_folders(client: IMAPClient) -> list[str]:
-    result = []
-    for _flags, _delim, name in client.list_folders():
-        result.append(name)
-    return sorted(result)
+@dataclass
+class FolderInfo:
+    name: str
+    delimiter: str
+    flags: list[str]
+    special_use: str | None  # "\\Drafts", "\\Trash", "\\Sent", "\\Junk", "\\Archive", ...
+
+
+def list_folders(
+    client: IMAPClient,
+    *,
+    pattern: str = "*",
+    subscribed_only: bool = False,
+) -> list[FolderInfo]:
+    """List folders, optionally filtered by IMAP pattern or subscription state.
+
+    ``pattern`` uses IMAP LIST wildcards: ``*`` matches any characters
+    including the hierarchy delimiter, ``%`` matches any characters except the
+    delimiter. Defaults to ``*`` (everything).
+    """
+    raw = (
+        client.list_sub_folders(pattern=pattern)
+        if subscribed_only
+        else client.list_folders(pattern=pattern)
+    )
+    specials = {b"\\Drafts", b"\\Trash", b"\\Sent", b"\\Junk", b"\\Archive", b"\\All", b"\\Flagged", b"\\Important"}
+    out: list[FolderInfo] = []
+    for flags, delim, name in raw:
+        flag_strs = [_flag_to_str(f) for f in flags]
+        special_bytes = next((f for f in flags if f in specials), None)
+        special = _flag_to_str(special_bytes) if special_bytes else None
+        delim_str = delim.decode() if isinstance(delim, bytes) else (delim or "")
+        out.append(FolderInfo(name=name, delimiter=delim_str, flags=flag_strs, special_use=special))
+    out.sort(key=lambda f: f.name)
+    return out
+
+
+def detect_special_mailboxes(client: IMAPClient) -> dict[str, str]:
+    """Return a ``{special_use: mailbox_name}`` map using RFC 6154 SPECIAL-USE.
+
+    Used by the setup wizard to auto-detect localised mailboxes so that
+    ``save_draft`` and ``delete_emails`` work on non-English accounts
+    (Gmail ``[Gmail]/Drafts``, iCloud ``Borradores``, IONOS ``Papelera``,
+    ...).
+    """
+    found: dict[str, str] = {}
+    for info in list_folders(client):
+        if info.special_use and info.special_use not in found:
+            found[info.special_use] = info.name
+    return found
+
+
+def _flag_to_str(flag: Any) -> str:
+    if isinstance(flag, bytes):
+        try:
+            return flag.decode()
+        except UnicodeDecodeError:
+            return flag.decode("latin-1", errors="replace")
+    return str(flag)
 
 
 def _build_criteria(
@@ -142,6 +206,7 @@ def search(
     *,
     mailbox: str,
     limit: int = 50,
+    offset: int = 0,
     unseen: bool | None = None,
     flagged: bool | None = None,
     from_: str | None = None,
@@ -150,8 +215,15 @@ def search(
     body_contains: str | None = None,
     since: date | None = None,
     before: date | None = None,
-) -> list[EmailHeader]:
+) -> tuple[int, list[EmailHeader]]:
+    """Search a mailbox and return ``(total_matches, page_of_headers)``.
+
+    ``total_matches`` is the pre-pagination count of UIDs matching the
+    criteria; ``page_of_headers`` is the ``limit``-sized slice after
+    ``offset``, newest first.
+    """
     limit = clamp_int(limit, low=1, high=500, field="limit")
+    offset = clamp_int(offset, low=0, high=10_000, field="offset")
     client.select_folder(mailbox, readonly=True)
     criteria = _build_criteria(
         mailbox=mailbox,
@@ -164,10 +236,11 @@ def search(
         since=since,
         before=before,
     )
-    uids = client.search(criteria)
-    uids = sorted(uids, reverse=True)[:limit]
+    all_uids = client.search(criteria)
+    total = len(all_uids)
+    uids = sorted(all_uids, reverse=True)[offset : offset + limit]
     if not uids:
-        return []
+        return total, []
     fetched = client.fetch(uids, ["ENVELOPE", "FLAGS", "INTERNALDATE"])
     headers: list[EmailHeader] = []
     for uid in uids:
@@ -192,7 +265,7 @@ def search(
                 flags=flags,
             )
         )
-    return headers
+    return total, headers
 
 
 def get_message(
@@ -380,10 +453,27 @@ def _extract_parts(msg: EmailMessage) -> tuple[str, str | None, list[Attachment]
             idx += 1
             continue
         if ctype == "text/plain" and not text_part:
-            text_part = part.get_content() if hasattr(part, "get_content") else ""
+            text_part = _safe_get_content(part)
         elif ctype == "text/html" and html_part is None:
-            html_part = part.get_content() if hasattr(part, "get_content") else ""
+            html_part = _safe_get_content(part)
     return text_part, html_part, attachments
+
+
+def _safe_get_content(part: EmailMessage) -> str:
+    """Decode a text MIME part, tolerating unknown or malformed charsets."""
+    try:
+        if hasattr(part, "get_content"):
+            return part.get_content()
+    except (LookupError, UnicodeDecodeError, AssertionError):
+        pass
+    raw = part.get_payload(decode=True) or b""
+    charset = part.get_content_charset() or "utf-8"
+    for candidate in (charset, "utf-8", "latin-1"):
+        try:
+            return raw.decode(candidate, errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("latin-1", errors="replace")
 
 
 def _iter_attachments(msg: EmailMessage):

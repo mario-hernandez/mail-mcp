@@ -6,6 +6,7 @@ and PII leak out of an email server. These helpers keep that surface clean.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -31,6 +32,30 @@ SECRET_KEYS = frozenset(
     }
 )
 
+# Match ``user@host.tld`` (including IDN hosts and + aliases).
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+# Match plausible hostnames (at least one dot, letters/digits/hyphen segments).
+_HOST_RE = re.compile(r"(?<![@\w])(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", re.IGNORECASE)
+
+# Patterns that identify runtime secrets in free-text error messages.
+#
+# Servers almost never echo credentials back in error strings — the common
+# shapes we actually need to guard against come from app-level debug logging
+# that leaked into an exception: ``XOAUTH2 <base64>``, ``AUTH PLAIN <b64>``,
+# ``password=<value>``, etc. The previous scrubber over-matched on bare
+# ``LOGIN `` and destroyed useful server error codes like
+# ``AUTHENTICATIONFAILED`` / ``BADCREDENTIALS``.
+_SECRET_SEQUENCES = re.compile(
+    # XOAUTH2 / AUTH PLAIN / AUTH LOGIN followed by a base64 blob.
+    r"\b(?:XOAUTH2|AUTH\s+PLAIN|AUTH\s+LOGIN)\s+[A-Za-z0-9+/=_\-]{8,}"
+    # IMAP LOGIN protocol trace: LOGIN "user" "pass" — scrub the quoted pass.
+    r'|\bLOGIN\s+"[^"]*"\s+"[^"]*"'
+    # key=value / key: value forms where the key is a secret label.
+    r"|\b(?:pass(?:word)?|secret|token|bearer|api[_-]?key)\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+
 
 def redact(value: Any) -> Any:
     """Recursively redact sensitive keys in a JSON-like structure."""
@@ -46,19 +71,20 @@ def redact(value: Any) -> Any:
     return value
 
 
-def sanitize_error(exc: BaseException) -> dict[str, str]:
-    """Return a structured summary of an exception safe to send to the LLM.
+def redact_text(message: str) -> str:
+    """Redact email addresses, hostnames, and secret-like tokens in free text.
 
-    Library error messages sometimes contain raw IMAP/SMTP command snippets
-    that include usernames or authentication tokens. We surface only the
-    exception class name plus a short, human-readable message with secret-like
-    substrings redacted.
+    Used for both log lines and tool error surfaces. Keeps server-provided
+    failure codes (``AUTHENTICATIONFAILED``, ``NO``, ``BAD``, ...) legible
+    because those are the actionable signal an LLM or the user needs.
     """
-    message = str(exc) or exc.__class__.__name__
-    lowered = message.lower()
-    for needle in ("login ", "auth=", "pass=", "password=", "xoauth2"):
-        idx = lowered.find(needle)
-        if idx != -1:
-            message = message[:idx] + REDACTED
-            break
-    return {"type": exc.__class__.__name__, "message": message[:500]}
+    cleaned = _SECRET_SEQUENCES.sub(REDACTED, message)
+    cleaned = _EMAIL_RE.sub("[REDACTED_EMAIL]", cleaned)
+    cleaned = _HOST_RE.sub("[REDACTED_HOST]", cleaned)
+    return cleaned
+
+
+def sanitize_error(exc: BaseException) -> dict[str, str]:
+    """Return a structured summary of an exception safe to send to the LLM."""
+    raw = str(exc) or exc.__class__.__name__
+    return {"type": exc.__class__.__name__, "message": redact_text(raw)[:500]}
