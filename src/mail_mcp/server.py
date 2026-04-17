@@ -27,7 +27,9 @@ from .config import Config, load
 from .safety.redaction import sanitize_error
 from .tools import drafts, organize, read, send
 from .tools.schemas import (
+    CreateFolderInput,
     DeleteEmailInput,
+    DeleteFolderInput,
     DownloadAttachmentInput,
     ForwardDraftInput,
     GetEmailInput,
@@ -35,6 +37,7 @@ from .tools.schemas import (
     ListFoldersInput,
     MarkFlagsInput,
     MoveEmailInput,
+    RenameFolderInput,
     ReplyDraftInput,
     SaveDraftInput,
     SearchInput,
@@ -193,6 +196,43 @@ def build_server(cfg: Config | None = None) -> Server:
             ),
             DeleteEmailInput,
             organize.delete_email,
+        ),
+        (
+            Tool(
+                name="create_folder",
+                description=(
+                    "Create an IMAP folder. Idempotent: succeeds silently if "
+                    "the folder already exists."
+                ),
+                inputSchema=CreateFolderInput.model_json_schema(),
+                annotations={"destructiveHint": False, "idempotentHint": True},
+            ),
+            CreateFolderInput,
+            organize.create_folder,
+        ),
+        (
+            Tool(
+                name="rename_folder",
+                description="Rename an IMAP folder. Fails if the destination already exists.",
+                inputSchema=RenameFolderInput.model_json_schema(),
+                annotations={"destructiveHint": False},
+            ),
+            RenameFolderInput,
+            organize.rename_folder,
+        ),
+        (
+            Tool(
+                name="delete_folder",
+                description=(
+                    "Delete an IMAP folder. Refuses non-empty folders unless "
+                    "confirm=true is passed — deleting a folder with messages "
+                    "is irreversible on most providers."
+                ),
+                inputSchema=DeleteFolderInput.model_json_schema(),
+                annotations={"destructiveHint": True},
+            ),
+            DeleteFolderInput,
+            organize.delete_folder,
         ),
     ]
 

@@ -51,7 +51,10 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `move_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Move messages between mailboxes |
 | `mark_emails` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Set/clear Seen and Flagged |
 | `delete_emails` | 🗑️ | `MAIL_MCP_WRITE_ENABLED=true` | Move to Trash by default; permanent delete double-gated |
-| `send_email` | 🚀 | `MAIL_MCP_WRITE_ENABLED=true` + `MAIL_MCP_SEND_ENABLED=true` + `confirm=true` | Send via SMTP |
+| `create_folder` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Create an IMAP folder (idempotent) |
+| `rename_folder` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Rename a folder, refuses collisions |
+| `delete_folder` | 🗑️ | `MAIL_MCP_WRITE_ENABLED=true` | Delete a folder; non-empty requires `confirm=true` |
+| `send_email` | 🚀 | `MAIL_MCP_WRITE_ENABLED=true` + `MAIL_MCP_SEND_ENABLED=true` + `confirm=true` | Send via SMTP (rate-limited per account) |
 
 When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the write tools **are not visible to the model at all** — it cannot enumerate them, let alone call them.
 
@@ -202,7 +205,7 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 87 tests covering the safety boundaries
+pytest         # 97 tests covering the safety boundaries
 ruff check src tests
 ```
 

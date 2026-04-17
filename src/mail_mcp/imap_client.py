@@ -391,6 +391,44 @@ def move_uids(
     return len(uids)
 
 
+def create_folder(client: IMAPClient, *, mailbox: str) -> None:
+    """Create an IMAP folder. Idempotent: succeeds if the folder already exists."""
+    validate_mailbox_name(mailbox)
+    if client.folder_exists(mailbox):
+        return
+    client.create_folder(mailbox)
+
+
+def rename_folder(client: IMAPClient, *, old_name: str, new_name: str) -> None:
+    validate_mailbox_name(old_name, field="old_name")
+    validate_mailbox_name(new_name, field="new_name")
+    if not client.folder_exists(old_name):
+        raise RuntimeError(f"folder {old_name!r} does not exist")
+    if client.folder_exists(new_name):
+        raise RuntimeError(f"folder {new_name!r} already exists")
+    client.rename_folder(old_name, new_name)
+
+
+def delete_folder(client: IMAPClient, *, mailbox: str, allow_non_empty: bool) -> int:
+    """Delete an IMAP folder. Refuses non-empty folders unless explicitly allowed.
+
+    Returns the count of messages that were inside the folder before deletion
+    (0 for the safe empty-folder path).
+    """
+    validate_mailbox_name(mailbox)
+    if not client.folder_exists(mailbox):
+        raise RuntimeError(f"folder {mailbox!r} does not exist")
+    status = client.folder_status(mailbox, what=["MESSAGES"])
+    count = int(status.get(b"MESSAGES", 0))
+    if count and not allow_non_empty:
+        raise RuntimeError(
+            f"folder {mailbox!r} is not empty ({count} messages). "
+            "Pass confirm=true to allow deletion of a non-empty folder."
+        )
+    client.delete_folder(mailbox)
+    return count
+
+
 def set_flags(
     client: IMAPClient,
     *,

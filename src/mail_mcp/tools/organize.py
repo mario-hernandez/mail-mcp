@@ -13,7 +13,14 @@ import os
 from .. import imap_client
 from ..config import Config
 from ..keyring_store import get_password
-from .schemas import DeleteEmailInput, MarkFlagsInput, MoveEmailInput
+from .schemas import (
+    CreateFolderInput,
+    DeleteEmailInput,
+    DeleteFolderInput,
+    MarkFlagsInput,
+    MoveEmailInput,
+    RenameFolderInput,
+)
 
 
 class OperationDisabled(RuntimeError):
@@ -23,6 +30,39 @@ class OperationDisabled(RuntimeError):
 def _auth(cfg: Config, alias: str | None):
     acct = cfg.account(alias)
     return acct, get_password(acct.alias, acct.email)
+
+
+def create_folder(cfg: Config, params: CreateFolderInput) -> dict:
+    acct, password = _auth(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        imap_client.create_folder(c, mailbox=params.mailbox)
+    return {"account": acct.alias, "mailbox": params.mailbox, "status": "created"}
+
+
+def rename_folder(cfg: Config, params: RenameFolderInput) -> dict:
+    acct, password = _auth(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        imap_client.rename_folder(c, old_name=params.old_name, new_name=params.new_name)
+    return {
+        "account": acct.alias,
+        "old_name": params.old_name,
+        "new_name": params.new_name,
+        "status": "renamed",
+    }
+
+
+def delete_folder(cfg: Config, params: DeleteFolderInput) -> dict:
+    acct, password = _auth(cfg, params.account)
+    with imap_client.connect(acct, password) as c:
+        removed = imap_client.delete_folder(
+            c, mailbox=params.mailbox, allow_non_empty=params.confirm,
+        )
+    return {
+        "account": acct.alias,
+        "mailbox": params.mailbox,
+        "status": "deleted",
+        "messages_lost": removed,
+    }
 
 
 def move_email(cfg: Config, params: MoveEmailInput) -> dict:

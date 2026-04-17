@@ -136,6 +136,26 @@ class MarkFlagsInput(_AccountScoped):
     mark_flagged: bool | None = None
 
 
+class CreateFolderInput(_AccountScoped):
+    mailbox: str = Field(max_length=255, description="Folder path to create (e.g. 'Archive/2026').")
+
+
+class RenameFolderInput(_AccountScoped):
+    old_name: str = Field(max_length=255, description="Existing folder path to rename.")
+    new_name: str = Field(max_length=255, description="New folder path.")
+
+
+class DeleteFolderInput(_AccountScoped):
+    mailbox: str = Field(max_length=255, description="Folder path to delete.")
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "Required when the folder still contains messages. Deleting a non-empty "
+            "folder is irreversible on most IMAP providers; treat with care."
+        ),
+    )
+
+
 class DeleteEmailInput(_AccountScoped):
     mailbox: str = Field(default="INBOX", max_length=255)
     uids: list[int] = Field(min_length=1, max_length=100)

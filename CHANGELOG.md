@@ -7,7 +7,18 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet. See [`ROADMAP.md`](ROADMAP.md) for what is coming next._
+_No unreleased changes yet._
+
+## [0.2.3] — 2026-04-17
+
+### Added
+- `create_folder` tool — idempotent IMAP folder creation (gated by
+  `MAIL_MCP_WRITE_ENABLED`).
+- `rename_folder` tool — refuses when the destination already exists.
+- `delete_folder` tool — refuses non-empty folders unless `confirm=true`
+  is passed, returning the message count that would be lost. Useful for
+  cleaning up after a bulk `move_email` consolidation (e.g. `Archivo` →
+  `Archive` via 24× 100-UID batches).
 
 ## [0.2.2] — 2026-04-17
 
