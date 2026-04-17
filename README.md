@@ -58,10 +58,13 @@ When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the write tools **are not 
 ## Install
 
 ```bash
-pip install mail-mcp
+# Until PyPI release — install straight from the repo:
+pip install "git+https://github.com/mario-hernandez/mail-mcp.git@main"
 ```
 
 Requires Python ≥ 3.11. On Linux make sure `libsecret` is installed (most desktops have it); on Windows and macOS the keyring backend ships with the OS.
+
+A full step-by-step integration guide (including Claude Desktop / Claude Code / Codex CLI config snippets and provider hosts) lives at [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
 ## Setup
 
