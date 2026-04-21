@@ -12,6 +12,7 @@ build/
 .mypy_cache/
 .DS_Store
 .coverage
+.claude/
 docs/images/*.png.bak
 research/
 docs/V021_PLAN.md
