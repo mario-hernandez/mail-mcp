@@ -13,10 +13,13 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from .safety.validation import ValidationError, validate_alias, validate_email_address
+
+AuthKind = Literal["password", "oauth-microsoft"]
 
 
 class AccountModel(BaseModel):
@@ -30,6 +33,12 @@ class AccountModel(BaseModel):
     smtp_starttls: bool = True
     drafts_mailbox: str = "Drafts"
     trash_mailbox: str = "Trash"
+    # auth mechanism. Default keeps every pre-existing account on password auth
+    # so upgrading mail-mcp never silently invalidates a saved config.
+    auth: AuthKind = "password"
+    # Microsoft OAuth-specific parameters. Non-empty only when auth == "oauth-microsoft".
+    oauth_tenant: str | None = None
+    oauth_client_id: str | None = None
 
     @field_validator("alias")
     @classmethod

@@ -9,6 +9,59 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.0] — 2026-04-23
+
+### Added — Microsoft 365 OAuth2 (browser sign-in)
+
+Tenant-managed Microsoft 365 accounts can now be connected with a proper
+OAuth browser flow. Microsoft disabled basic-auth IMAP/SMTP for most
+tenants in late 2022; until now `mail-mcp` told those users "use
+`email-oauth2-proxy` locally" — this release removes that workaround.
+
+- New optional dependency: `mail-mcp[oauth-microsoft]` pulls in `msal`.
+  Password-only users never load it.
+- `mail-mcp init` detects Microsoft 365 hosts and offers "Sign in with
+  Microsoft (browser)" as the recommended choice. Loopback + PKCE, no
+  client secret. The wizard asks once for the Azure app's client ID and
+  tenant ID (or reads them from `MAIL_MCP_M365_CLIENT_ID` /
+  `MAIL_MCP_M365_TENANT`).
+- Refresh tokens live in the OS keyring under
+  `mail-mcp:<alias>:refresh_token`; access tokens (1 h TTL) stay in the
+  process memory cache and are silently refreshed, with rotated refresh
+  tokens persisted automatically.
+- SMTP and IMAP clients gained XOAUTH2 support. All tools go through a
+  single new `credentials.resolve_auth()` function that returns either a
+  password or a fresh access token depending on the account's `auth`
+  field.
+- New `docs/OAUTH_MICROSOFT.md` with step-by-step Azure AD registration
+  instructions and a troubleshooting matrix for common AADSTS errors.
+- 8 new unit tests (`tests/test_oauth.py`) covering the SASL payload
+  format, cache expiry, refresh-token rotation, and the password/OAuth
+  branch selection — all with MSAL stubbed so they run in < 0.1 s.
+
+### Changed
+
+- `AccountModel` grew three optional fields (`auth`, `oauth_tenant`,
+  `oauth_client_id`). Defaults preserve full back-compat: every existing
+  `config.json` loads unchanged and continues to use password auth.
+- `imap_client.connect()` and `smtp_client.send()` / `test_login()` now
+  accept either a raw password string (legacy path, still used by
+  tests) or an `AuthCredential` (new path). No call sites outside the
+  package needed updating.
+- The tool layer (`tools/read.py`, `tools/drafts.py`, `tools/organize.py`,
+  `tools/send.py`, `doctor.py`) stopped importing `get_password` directly
+  and now goes through `credentials.resolve_auth`. Integration-test
+  fixtures simplified in lockstep: a single monkeypatch at the origin is
+  enough now that tool modules no longer rebind the symbol.
+
+### Kept as-is
+
+- Google / Gmail still follow the "BYO Google Cloud project or local
+  proxy" documentation path — Google requires per-user Cloud projects to
+  publish a client ID, which is out of scope for a single-binary install.
+- `mail-mcp[oauth-microsoft]` is opt-in; the default install still pulls
+  zero OAuth-specific dependencies.
+
 ## [0.2.5] — 2026-04-18
 
 ### Added

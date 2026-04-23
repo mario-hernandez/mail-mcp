@@ -18,8 +18,14 @@ from typing import Any
 from . import autoconfig, imap_client, smtp_client
 from .autoconfig import Discovery, DiscoveryError, ServerSpec
 from .config import AccountModel, ConfigModel, load, save
-from .keyring_store import set_password
+from .credentials import AuthCredential
+from .keyring_store import set_password, set_refresh_token
 from .safety.validation import validate_alias
+
+# Hostnames that identify a Microsoft 365 IMAP endpoint — used to offer the
+# OAuth browser flow instead of the password path (which Microsoft disabled
+# by default for tenant-managed accounts in late 2022).
+_M365_IMAP_HOSTS = ("outlook.office365.com",)
 
 
 class WizardError(RuntimeError):
@@ -116,11 +122,14 @@ def run() -> int:
         )
         disc.imap = ServerSpec(disc.imap.host, 993, "ssl")
 
-    password = questionary.password(
-        "Password (stored in the OS keyring):",
-    ).ask()
-    if not password:
-        return _cancelled(console)
+    # Microsoft 365 has basic-auth IMAP disabled by default for tenant-managed
+    # mailboxes, so we detect that host and steer the user toward OAuth before
+    # they type a password that won't work. Users can still decline if their
+    # tenant has the legacy flag flipped.
+    is_m365 = disc.imap.host in _M365_IMAP_HOSTS
+    use_oauth = False
+    if is_m365:
+        use_oauth = _prompt_oauth_choice(questionary, console)
 
     default_alias = _default_alias(email)
     alias = questionary.text(
@@ -138,6 +147,23 @@ def run() -> int:
         ).ask()
         if not overwrite:
             return _cancelled(console)
+
+    if use_oauth:
+        return _finish_oauth_microsoft(
+            questionary=questionary,
+            console=console,
+            Panel=Panel,
+            email=email,
+            alias=alias,
+            disc=disc,
+            cfg=cfg,
+        )
+
+    password = questionary.password(
+        "Password (stored in the OS keyring):",
+    ).ask()
+    if not password:
+        return _cancelled(console)
 
     account = AccountModel(
         alias=alias,
@@ -299,11 +325,12 @@ def _prompt_manual(questionary: Any, console: Any) -> Discovery | None:
 
 
 def _test_imap(
-    console: Any, account: AccountModel, password: str
+    console: Any, account: AccountModel, credential: Any
 ) -> tuple[bool, str | None, dict[str, str]]:
+    """``credential`` is a password string or an :class:`AuthCredential`."""
     with console.status("[cyan]Testing IMAP login…", spinner="dots"):
         try:
-            with imap_client.connect(account, password) as c:
+            with imap_client.connect(account, credential) as c:
                 imap_client.list_folders(c)
                 specials = imap_client.detect_special_mailboxes(c)
         except Exception as exc:  # noqa: BLE001
@@ -317,10 +344,11 @@ def _test_imap(
     return True, None, specials
 
 
-def _test_smtp(console: Any, account: AccountModel, password: str) -> tuple[bool, str | None]:
+def _test_smtp(console: Any, account: AccountModel, credential: Any) -> tuple[bool, str | None]:
+    """``credential`` is a password string or an :class:`AuthCredential`."""
     with console.status("[cyan]Testing SMTP login…", spinner="dots"):
         try:
-            smtp_client.test_login(account, password)
+            smtp_client.test_login(account, credential)
         except Exception as exc:  # noqa: BLE001
             console.print(
                 f"  SMTP  : [red]✗[/red]  {account.smtp_host}:{account.smtp_port}"
@@ -330,3 +358,204 @@ def _test_smtp(console: Any, account: AccountModel, password: str) -> tuple[bool
         f"  SMTP  : [green]✓[/green]  {account.smtp_host}:{account.smtp_port}"
     )
     return True, None
+
+
+# --- OAuth Microsoft 365 helpers -------------------------------------------
+
+
+def _prompt_oauth_choice(questionary: Any, console: Any) -> bool:
+    """Ask whether to sign in via browser (OAuth) or fall back to password.
+
+    Returns True only when the user picks OAuth *and* MSAL is installed. If
+    MSAL is missing we print a hint and fall back to the password branch
+    silently — avoiding the foot-gun where the user picks OAuth, we crash,
+    and they have to re-run ``init`` from scratch.
+    """
+    try:
+        import msal  # type: ignore[import-untyped]  # noqa: F401
+    except ModuleNotFoundError:
+        console.print(
+            "[yellow]Microsoft 365 detected but OAuth support not installed.\n"
+            "To enable browser sign-in (recommended; Microsoft disabled basic-auth "
+            "IMAP for most tenants):\n"
+            "  pip install 'mail-mcp[oauth-microsoft]'[/yellow]"
+        )
+        return False
+
+    choice = questionary.select(
+        "Microsoft 365 detected. How do you want to sign in?",
+        choices=[
+            questionary.Choice(
+                title="Sign in with Microsoft (browser — recommended)",
+                value="oauth",
+            ),
+            questionary.Choice(
+                title="Use a password / app password (legacy)",
+                value="password",
+            ),
+        ],
+        default="oauth",
+    ).ask()
+    return choice == "oauth"
+
+
+def _finish_oauth_microsoft(
+    *,
+    questionary: Any,
+    console: Any,
+    Panel: Any,
+    email: str,
+    alias: str,
+    disc: Discovery,
+    cfg: Any,
+) -> int:
+    """Run the OAuth flow: prompt IDs, browser, verify, save.
+
+    Reads the Azure app registration identifiers from env vars if present
+    (``MAIL_MCP_M365_CLIENT_ID``, ``MAIL_MCP_M365_TENANT``); otherwise
+    prompts the user. Tenant can be a GUID, a verified domain, or
+    ``common``; the wizard does not try to guess it from the email domain
+    because a verified domain and a tenant ID are not the same thing.
+    """
+    import os as _os
+
+    from . import oauth
+
+    client_id_default = _os.environ.get("MAIL_MCP_M365_CLIENT_ID", "")
+    tenant_default = _os.environ.get("MAIL_MCP_M365_TENANT", "")
+
+    console.print(
+        Panel(
+            (
+                "You need an Azure AD app registration (public client) with:\n"
+                "  • Redirect URI type: [bold]public client / native[/bold]\n"
+                "  • Redirect URI value: [bold]http://localhost[/bold]\n"
+                "  • API permissions (delegated): "
+                "IMAP.AccessAsUser.All, SMTP.Send, offline_access\n"
+                "  • 'Allow public client flows' = [bold]Yes[/bold]\n\n"
+                "See docs/OAUTH_MICROSOFT.md for step-by-step screenshots."
+            ),
+            title="Azure AD app registration",
+            border_style="cyan",
+        )
+    )
+
+    client_id = questionary.text(
+        "Azure application (client) ID:",
+        default=client_id_default,
+        validate=lambda v: bool((v or "").strip()) or "client ID is required",
+    ).ask()
+    if client_id is None:
+        return _cancelled(console)
+    client_id = client_id.strip()
+
+    tenant = questionary.text(
+        "Directory (tenant) ID, verified domain, or 'common':",
+        default=tenant_default or "common",
+        validate=lambda v: bool((v or "").strip()) or "tenant is required",
+    ).ask()
+    if tenant is None:
+        return _cancelled(console)
+    tenant = tenant.strip()
+
+    console.print(
+        "[cyan]A browser window will open. Complete the sign-in there; this "
+        "process will continue once authentication succeeds.[/cyan]"
+    )
+    try:
+        with console.status("[cyan]Waiting for browser sign-in…", spinner="dots"):
+            bundle = oauth.acquire_token_interactive(
+                email=email,
+                client_id=client_id,
+                tenant=tenant,
+            )
+    except oauth.OAuthError as exc:
+        console.print(f"[red]OAuth sign-in failed: {exc}[/red]")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]OAuth sign-in failed: {exc}[/red]")
+        return 1
+
+    if not bundle.refresh_token:
+        console.print(
+            "[red]The token bundle is missing a refresh token. "
+            "Make sure 'offline_access' is in the granted API permissions."
+            "[/red]"
+        )
+        return 1
+
+    account = AccountModel(
+        alias=alias,
+        email=email,
+        imap_host=disc.imap.host,
+        imap_port=disc.imap.port,
+        imap_use_ssl=True,
+        smtp_host=disc.smtp.host,
+        smtp_port=disc.smtp.port,
+        smtp_starttls=(disc.smtp.security == "starttls"),
+        auth="oauth-microsoft",
+        oauth_client_id=client_id,
+        oauth_tenant=tenant,
+    )
+
+    # Verify the fresh access token actually works for IMAP and SMTP before
+    # we write anything to disk or to the keyring.
+    creds = AuthCredential(kind="oauth2", username=email, secret=bundle.access_token)
+    imap_ok, imap_err, specials = _test_imap(console, account, creds)
+    smtp_ok, smtp_err = _test_smtp(console, account, creds)
+    if specials:
+        drafts = specials.get("\\Drafts")
+        trash = specials.get("\\Trash")
+        if drafts and drafts != account.drafts_mailbox:
+            console.print(f"  [dim]detected Drafts mailbox: {drafts}[/dim]")
+            account = account.model_copy(update={"drafts_mailbox": drafts})
+        if trash and trash != account.trash_mailbox:
+            console.print(f"  [dim]detected Trash mailbox: {trash}[/dim]")
+            account = account.model_copy(update={"trash_mailbox": trash})
+
+    if not (imap_ok and smtp_ok):
+        if imap_err:
+            console.print(f"   [dim]IMAP error: {imap_err}[/dim]")
+        if smtp_err:
+            console.print(f"   [dim]SMTP error: {smtp_err}[/dim]")
+        save_anyway = questionary.confirm(
+            "One or more checks failed. Save the account anyway?",
+            default=False,
+        ).ask()
+        if not save_anyway:
+            console.print("[yellow]discarded, nothing written.[/yellow]")
+            return 1
+
+    # Persist refresh token first; if config write fails after this, a second
+    # run of the wizard can reuse it silently (via acquire_token_by_refresh).
+    set_refresh_token(alias, bundle.refresh_token)
+    oauth.cache_access_token(alias, bundle)
+    accounts = [a for a in cfg.model.accounts if a.alias != alias]
+    accounts.append(account)
+    cfg.model = ConfigModel(
+        default_alias=cfg.model.default_alias or alias,
+        accounts=accounts,
+    )
+    save(cfg)
+
+    console.print()
+    console.print(
+        Panel(
+            (
+                f"[green]✓[/green] Saved account [bold]{alias}[/bold] (OAuth)\n"
+                f"  config   {cfg.path}\n"
+                f"  secret   OS keyring (service = mail-mcp:{alias}:refresh_token)\n"
+                f"  tenant   {tenant}\n\n"
+                "Next: register mail-mcp with your AI client.\n\n"
+                "  [cyan]Claude Code[/cyan]    "
+                "claude mcp add mail-mcp \"$(which mail-mcp)\" serve\n"
+                "  [cyan]Claude Desktop[/cyan] edit claude_desktop_config.json "
+                "(docs/INTEGRATION.md)\n"
+                "  [cyan]Codex CLI[/cyan]      edit ~/.codex/config.toml "
+                "(docs/INTEGRATION.md)"
+            ),
+            title="all set",
+            border_style="green",
+        )
+    )
+    return 0

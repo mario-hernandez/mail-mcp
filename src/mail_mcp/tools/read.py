@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .. import imap_client
 from ..config import Config
-from ..keyring_store import get_password
+from ..credentials import resolve_auth
 from ..safety.guards import sanitize_header, wrap_untrusted
 from ..safety.paths import default_download_root, prepare_download_path
 from .schemas import (
@@ -32,8 +32,7 @@ from .schemas import (
 
 def _resolve(cfg: Config, alias: str | None):
     acct = cfg.account(alias)
-    password = get_password(acct.alias, acct.email)
-    return acct, password
+    return acct, resolve_auth(acct)
 
 
 def _sanitize_header_dict(header: dict) -> dict:
@@ -57,8 +56,8 @@ def _sanitize_attachment(att: dict) -> dict:
 
 
 def list_folders(cfg: Config, params: ListFoldersInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         folders = imap_client.list_folders(
             c,
             pattern=params.pattern or "*",
@@ -80,8 +79,8 @@ def list_folders(cfg: Config, params: ListFoldersInput) -> dict:
 
 
 def search(cfg: Config, params: SearchInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         total, headers = imap_client.search(
             c,
             mailbox=params.mailbox,
@@ -107,8 +106,8 @@ def search(cfg: Config, params: SearchInput) -> dict:
 
 
 def get_email(cfg: Config, params: GetEmailInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         body = imap_client.get_message(
             c,
             mailbox=params.mailbox,
@@ -126,8 +125,8 @@ def get_email(cfg: Config, params: GetEmailInput) -> dict:
 
 
 def list_attachments(cfg: Config, params: ListAttachmentsInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         body = imap_client.get_message(
             c, mailbox=params.mailbox, uid=params.uid, max_chars=100
         )
@@ -164,22 +163,22 @@ def get_account_info(cfg: Config, params: AccountInfoInput) -> dict:
 
 
 def get_special_folders(cfg: Config, params: SpecialFoldersInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         specials = imap_client.detect_special_mailboxes(c)
     return {"account": acct.alias, "special_folders": specials}
 
 
 def get_quota(cfg: Config, params: GetQuotaInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         quota = imap_client.get_quota(c, folder=params.folder)
     return {"account": acct.alias, "folder": params.folder, **quota}
 
 
 def list_drafts(cfg: Config, params: ListDraftsInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         total, headers = imap_client.search(
             c,
             mailbox=acct.drafts_mailbox,
@@ -197,8 +196,8 @@ def list_drafts(cfg: Config, params: ListDraftsInput) -> dict:
 
 
 def get_thread(cfg: Config, params: GetThreadInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         # 1) find which thread the UID belongs to, then return that thread's UIDs.
         groups = imap_client.thread_references(
             c, mailbox=params.mailbox, since_days=params.since_days,
@@ -228,8 +227,8 @@ def get_thread(cfg: Config, params: GetThreadInput) -> dict:
 
 
 def download_attachment(cfg: Config, params: DownloadAttachmentInput) -> dict:
-    acct, password = _resolve(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         filename, ctype, payload = imap_client.download_attachment(
             c,
             mailbox=params.mailbox,

@@ -313,11 +313,10 @@ def patched_keyring(
 ) -> None:
     """Stub out the OS keyring so production code sees a live password.
 
-    We patch in two places because ``from X import Y`` in the consumer
-    modules rebinds the name — patching only ``mail_mcp.keyring_store`` isn't
-    enough if a caller has already done ``from mail_mcp.keyring_store import
-    get_password``. The symbol path in the server/tools layer is therefore
-    patched too when present.
+    Since v0.3 the tool layer no longer imports ``get_password`` directly —
+    it goes through :mod:`mail_mcp.credentials.resolve_auth`, which itself
+    uses ``keyring_store.get_password`` via module-qualified access. Patching
+    the single origin is therefore enough; no per-consumer binding to chase.
 
     The stub only returns our test password for the current ``test_account``
     alias. Any other alias raises, matching production behaviour (the real
@@ -329,17 +328,7 @@ def patched_keyring(
             return _GREENMAIL_PASSWORD
         raise RuntimeError("credential not found in keyring")
 
-    # Patch every binding site: the tool modules import the function as a
-    # bare name (``from ..keyring_store import get_password``) and keep a
-    # local reference, so patching just the origin misses them.
-    for target in (
-        "mail_mcp.keyring_store.get_password",
-        "mail_mcp.tools.read.get_password",
-        "mail_mcp.tools.drafts.get_password",
-        "mail_mcp.tools.organize.get_password",
-        "mail_mcp.tools.send.get_password",
-    ):
-        monkeypatch.setattr(target, _fake_get_password)
+    monkeypatch.setattr("mail_mcp.keyring_store.get_password", _fake_get_password)
 
 
 # --- Mailbox seeding (autouse) ----------------------------------------------
