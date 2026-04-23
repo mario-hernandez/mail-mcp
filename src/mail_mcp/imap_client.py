@@ -76,8 +76,14 @@ class EmailBody:
 
 
 @contextmanager
-def connect(account: AccountModel, password: str):
-    """Open an authenticated IMAP connection with TLS enforced."""
+def connect(account: AccountModel, credential: Any):
+    """Open an authenticated IMAP connection with TLS enforced.
+
+    ``credential`` is either a raw password string (legacy path, still used
+    by tests and by the wizard pre-save) or an :class:`AuthCredential`
+    whose ``kind`` selects the login mechanism. Accepting both keeps the
+    rich test suite working without any per-test plumbing change.
+    """
     ctx = create_tls_context()
     if not account.imap_use_ssl:
         raise ValidationError("IMAP connections must use SSL/TLS (imap_use_ssl=true)")
@@ -89,13 +95,32 @@ def connect(account: AccountModel, password: str):
         timeout=SocketTimeout(connect=_IMAP_CONNECT_TIMEOUT, read=_IMAP_READ_TIMEOUT),
     )
     try:
-        client.login(account.email, password)
+        _imap_authenticate(client, account, credential)
         yield client
     finally:
         try:
             client.logout()
         except Exception:  # noqa: BLE001, S110 — best-effort teardown, errors are informational only
             pass
+
+
+def _imap_authenticate(client: IMAPClient, account: AccountModel, credential: Any) -> None:
+    """Log in to ``client`` using either a password or an OAuth access token.
+
+    Isolated so the caller's ``with`` statement stays readable and so new
+    auth kinds can be added here without touching the context manager.
+    """
+    from .credentials import AuthCredential  # local import avoids a cycle
+
+    if isinstance(credential, AuthCredential):
+        if credential.kind == "oauth2":
+            client.oauth2_login(credential.username, credential.secret)
+            return
+        client.login(credential.username, credential.secret)
+        return
+    # Legacy str path — kept so tests that call connect(acct, "password")
+    # directly keep working.
+    client.login(account.email, credential)
 
 
 @dataclass

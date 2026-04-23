@@ -60,13 +60,13 @@ def _write_and_send_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
 def _patch_tool_keyring_bindings(
     test_account: AccountModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Patch ``get_password`` at every tool-module binding site.
+    """Patch ``get_password`` at its single origin.
 
-    Each tool module does ``from ..keyring_store import get_password`` at
-    import time, which binds the name in the tool module's own namespace.
-    The shared ``patched_keyring`` fixture only replaces the attribute on
-    :mod:`mail_mcp.keyring_store`, which is invisible to tool code that has
-    already imported the symbol. We repatch each binding here.
+    The shared ``patched_keyring`` fixture already does the main patch;
+    this one stays in place as a per-test override that accepts either
+    alias-based or email-based lookup. Since v0.3 the tool layer does not
+    import ``get_password`` directly (it goes through ``resolve_auth``),
+    so patching :mod:`mail_mcp.keyring_store` is enough.
     """
 
     def _fake(alias: str, email: str) -> str:
@@ -74,9 +74,7 @@ def _patch_tool_keyring_bindings(
             return "greenmail"
         raise RuntimeError(f"no password stub for {alias!r}/{email!r}")
 
-    for module in ("mail_mcp.tools.drafts", "mail_mcp.tools.read",
-                   "mail_mcp.tools.send", "mail_mcp.tools.organize"):
-        monkeypatch.setattr(f"{module}.get_password", _fake)
+    monkeypatch.setattr("mail_mcp.keyring_store.get_password", _fake)
 
 
 @pytest.fixture(autouse=True)
@@ -151,11 +149,6 @@ def recipient_account(
         raise RuntimeError(f"no password stub for {alias_in!r}/{email_in!r}")
 
     monkeypatch.setattr("mail_mcp.keyring_store.get_password", _get_password)
-    # Each tool module rebinds `get_password` at import time via
-    # `from ..keyring_store import get_password`; repatch every site.
-    for module in ("mail_mcp.tools.drafts", "mail_mcp.tools.read",
-                   "mail_mcp.tools.send", "mail_mcp.tools.organize"):
-        monkeypatch.setattr(f"{module}.get_password", _get_password)
     return acct, password
 
 

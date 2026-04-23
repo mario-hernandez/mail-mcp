@@ -14,11 +14,13 @@ defence against header-injection attacks.
 
 from __future__ import annotations
 
+import base64
 import email
 import email.policy
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
+from typing import Any
 
 from .config import AccountModel
 from .safety.tls import create_tls_context
@@ -266,11 +268,40 @@ def _sanitize_attachment_name(value: str) -> str:
     return cleaned[:60]
 
 
-def test_login(account: AccountModel, password: str, *, timeout: float = 15.0) -> None:
+def _smtp_authenticate(server: smtplib.SMTP, account: AccountModel, credential: Any) -> None:
+    """Authenticate an already-open SMTP session with password or XOAUTH2.
+
+    Kept small and side-effect-only: callers hand us an already-EHLO'd
+    server and we leave it ready to ``send_message``. The OAuth branch uses
+    :meth:`smtplib.SMTP.auth` with a callback that returns the raw XOAUTH2
+    SASL string; SMTP base64-encodes it on the wire.
+    """
+    from .credentials import AuthCredential  # local import avoids a cycle
+
+    if isinstance(credential, AuthCredential):
+        if credential.kind == "oauth2":
+            from . import oauth
+
+            xoauth2 = oauth.build_xoauth2(credential.username, credential.secret)
+            # smtplib.SMTP.auth calls the callback with the challenge (empty for
+            # XOAUTH2's initial response) and expects an already-base64 ASCII
+            # string back, not raw bytes.
+            encoded = base64.b64encode(xoauth2).decode("ascii")
+            server.auth("XOAUTH2", lambda _challenge="": encoded, initial_response_ok=True)
+            return
+        server.login(credential.username, credential.secret)
+        return
+    # Legacy str path (password). Preserved for the wizard's pre-save check.
+    server.login(account.email, credential)
+
+
+def test_login(account: AccountModel, credential: Any, *, timeout: float = 15.0) -> None:
     """Authenticate against the account's SMTP server and close the session.
 
     Used by the interactive wizard to verify the user's credentials before
-    saving them. Raises the underlying :mod:`smtplib` exception on failure.
+    saving them. Accepts either a raw password string or an
+    :class:`AuthCredential`. Raises the underlying :mod:`smtplib` exception
+    on failure.
     """
     ctx = create_tls_context()
     if account.smtp_starttls:
@@ -278,25 +309,27 @@ def test_login(account: AccountModel, password: str, *, timeout: float = 15.0) -
             server.ehlo()
             server.starttls(context=ctx)
             server.ehlo()
-            server.login(account.email, password)
+            _smtp_authenticate(server, account, credential)
     else:
         with smtplib.SMTP_SSL(
             account.smtp_host, account.smtp_port, context=ctx, timeout=timeout
         ) as server:
-            server.login(account.email, password)
+            _smtp_authenticate(server, account, credential)
 
 
 def send(
     account: AccountModel,
-    password: str,
+    credential: Any,
     msg: EmailMessage,
     *,
     bcc: list[str] | None = None,
 ) -> str:
     """Deliver ``msg`` via SMTP, enforcing TLS.
 
-    ``bcc`` entries are added to the envelope recipients but never appear as
-    a header. Returns the message's ``Message-ID``.
+    ``credential`` is either a raw password string or an
+    :class:`AuthCredential` (password or OAuth2). ``bcc`` entries are added
+    to the envelope recipients but never appear as a header. Returns the
+    message's ``Message-ID``.
     """
     ctx = create_tls_context()
     recipients = [
@@ -309,12 +342,12 @@ def send(
             server.ehlo()
             server.starttls(context=ctx)
             server.ehlo()
-            server.login(account.email, password)
+            _smtp_authenticate(server, account, credential)
             server.send_message(msg, from_addr=account.email, to_addrs=recipients)
     else:
         with smtplib.SMTP_SSL(
             account.smtp_host, account.smtp_port, context=ctx, timeout=30
         ) as server:
-            server.login(account.email, password)
+            _smtp_authenticate(server, account, credential)
             server.send_message(msg, from_addr=account.email, to_addrs=recipients)
     return msg["Message-ID"]

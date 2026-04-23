@@ -164,7 +164,7 @@ MAIL_MCP_WRITE_ENABLED = "true"   # optional
 | Gmail | ✅ with app password | Enable 2FA, then generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) |
 | iCloud | ✅ with app password | Required; generate at appleid.apple.com |
 | Outlook.com personal | ✅ with app password | Generate at account.live.com |
-| Microsoft 365 (tenant managed) | ⚠️ basic-auth disabled | OAuth2 is planned for v0.2.2. Use `email-oauth2-proxy` locally as a stopgap. |
+| Microsoft 365 (tenant managed) | ✅ with OAuth2 (browser sign-in) | Install `mail-mcp[oauth-microsoft]`, register a public-client app in Azure AD, follow [`docs/OAUTH_MICROSOFT.md`](docs/OAUTH_MICROSOFT.md). Basic-auth is off by default on M365 since late 2022. |
 | Proton Mail | ✅ via Bridge | Run Proton Bridge; `mail-mcp init` detects the `proton.me` domain and points at `127.0.0.1:1143` |
 | Custom domain on any of the above | ✅ | Autoconfig resolves via MX / SRV / `autoconfig.<domain>` |
 
@@ -221,7 +221,7 @@ ruff check src tests
 
 ## Non-goals
 
-- OAuth2 (scheduled for v0.2.2 — Gmail/Outlook without app passwords).
+- OAuth2 for Gmail in-tree (use BYO Cloud project or `email-oauth2-proxy`). Microsoft 365 OAuth is **supported** since v0.3 — see [`docs/OAUTH_MICROSOFT.md`](docs/OAUTH_MICROSOFT.md).
 - Multiple-account switching at tool-call time (single default account in v0.2.x).
 - HTTP/SSE transport.
 - Web UI.

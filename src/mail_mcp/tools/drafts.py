@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .. import imap_client, smtp_client
 from ..config import Config
-from ..keyring_store import get_password
+from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
 from .schemas import (
     ForwardDraftInput,
@@ -24,7 +24,7 @@ from .schemas import (
 
 def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
     acct = cfg.account(params.account)
-    password = get_password(acct.alias, acct.email)
+    creds = resolve_auth(acct)
     attachments = resolve_many(params.attachments) if params.attachments else []
     msg = smtp_client.build_message(
         from_addr=acct.email,
@@ -39,7 +39,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
     # BCC is deliberately not persisted on a draft: the user's mail client
     # will re-enter BCC at send time. Drafts with BCC headers break some
     # providers' threading.
-    with imap_client.connect(acct, password) as c:
+    with imap_client.connect(acct, creds) as c:
         draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
     return {
         "account": acct.alias,
@@ -51,8 +51,8 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
 
 def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
     acct = cfg.account(params.account)
-    password = get_password(acct.alias, acct.email)
-    with imap_client.connect(acct, password) as c:
+    creds = resolve_auth(acct)
+    with imap_client.connect(acct, creds) as c:
         _raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
@@ -88,8 +88,8 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
     import email.policy as _policy
 
     acct = cfg.account(params.account)
-    password = get_password(acct.alias, acct.email)
-    with imap_client.connect(acct, password) as c:
+    creds = resolve_auth(acct)
+    with imap_client.connect(acct, creds) as c:
         raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
@@ -163,8 +163,8 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 
     acct = cfg.account(params.account)
     _check_rate_limit(acct.alias)
-    password = get_password(acct.alias, acct.email)
-    with imap_client.connect(acct, password) as c:
+    creds = resolve_auth(acct)
+    with imap_client.connect(acct, creds) as c:
         raw, _headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
@@ -173,7 +173,7 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
         for hdr in ("X-Mozilla-Draft-Info", "X-Mozilla-Keys"):
             if hdr in msg:
                 del msg[hdr]
-        message_id = smtp_client.send(acct, password, msg)
+        message_id = smtp_client.send(acct, creds, msg)
         imap_client.delete_uids(
             c,
             mailbox=params.mailbox,
@@ -191,8 +191,8 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 
 def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
     acct = cfg.account(params.account)
-    password = get_password(acct.alias, acct.email)
-    with imap_client.connect(acct, password) as c:
+    creds = resolve_auth(acct)
+    with imap_client.connect(acct, creds) as c:
         raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )

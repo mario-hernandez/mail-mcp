@@ -82,7 +82,8 @@ def run(argv: list[str] | None = None) -> int:
             f"imap={acct.imap_host}:{acct.imap_port}  "
             f"smtp={acct.smtp_host}:{acct.smtp_port}"
         )
-        status = _keyring_status(acct.alias, acct.email)
+        status = _keyring_status(acct.alias, acct.email, acct.auth)
+        print(f"     auth         : {acct.auth}")
         print(f"     keyring      : {status}")
         if args.connect:
             print(f"     imap+smtp    : {_live_check(acct)}")
@@ -118,11 +119,20 @@ def _keyring_backend() -> str:
         return f"unavailable ({exc.__class__.__name__})"
 
 
-def _keyring_status(alias: str, email: str) -> str:
+def _keyring_status(alias: str, email: str, auth: str) -> str:
+    """Report whether the credential this account expects is present.
+
+    Password accounts look up ``mail-mcp:<alias>`` + email. OAuth accounts
+    look up the parallel refresh-token entry; an OAuth account with a valid
+    refresh token is ``stored`` even if no password has ever been saved.
+    """
     try:
         import keyring
 
-        value = keyring.get_password(f"{SERVICE_PREFIX}:{alias}", email)
+        if auth == "oauth-microsoft":
+            value = keyring.get_password(f"{SERVICE_PREFIX}:{alias}:refresh_token", "oauth2")
+        else:
+            value = keyring.get_password(f"{SERVICE_PREFIX}:{alias}", email)
     except Exception as exc:  # noqa: BLE001
         return f"error ({exc.__class__.__name__})"
     return "stored" if value else "missing"
@@ -131,19 +141,19 @@ def _keyring_status(alias: str, email: str) -> str:
 def _live_check(acct) -> str:
     """Authenticate against IMAP+SMTP; does not transfer any messages."""
     from . import imap_client, smtp_client
-    from .keyring_store import get_password
+    from .credentials import resolve_auth
 
     try:
-        password = get_password(acct.alias, acct.email)
+        creds = resolve_auth(acct)
     except Exception as exc:  # noqa: BLE001
-        return f"keyring error ({exc.__class__.__name__})"
+        return f"credential error ({exc.__class__.__name__})"
     try:
-        with imap_client.connect(acct, password) as c:
+        with imap_client.connect(acct, creds) as c:
             imap_client.list_folders(c, pattern="*")
     except Exception as exc:  # noqa: BLE001
         return f"IMAP error ({exc.__class__.__name__})"
     try:
-        smtp_client.test_login(acct, password, timeout=15)
+        smtp_client.test_login(acct, creds, timeout=15)
     except Exception as exc:  # noqa: BLE001
         return f"IMAP ok, SMTP error ({exc.__class__.__name__})"
     return "IMAP ok, SMTP ok"

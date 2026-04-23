@@ -12,7 +12,7 @@ import os
 
 from .. import imap_client
 from ..config import Config
-from ..keyring_store import get_password
+from ..credentials import resolve_auth
 from .schemas import (
     CopyEmailInput,
     CreateFolderInput,
@@ -30,19 +30,19 @@ class OperationDisabled(RuntimeError):
 
 def _auth(cfg: Config, alias: str | None):
     acct = cfg.account(alias)
-    return acct, get_password(acct.alias, acct.email)
+    return acct, resolve_auth(acct)
 
 
 def create_folder(cfg: Config, params: CreateFolderInput) -> dict:
-    acct, password = _auth(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _auth(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         imap_client.create_folder(c, mailbox=params.mailbox)
     return {"account": acct.alias, "mailbox": params.mailbox, "status": "created"}
 
 
 def rename_folder(cfg: Config, params: RenameFolderInput) -> dict:
-    acct, password = _auth(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _auth(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         imap_client.rename_folder(c, old_name=params.old_name, new_name=params.new_name)
     return {
         "account": acct.alias,
@@ -53,8 +53,8 @@ def rename_folder(cfg: Config, params: RenameFolderInput) -> dict:
 
 
 def delete_folder(cfg: Config, params: DeleteFolderInput) -> dict:
-    acct, password = _auth(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _auth(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         removed = imap_client.delete_folder(
             c, mailbox=params.mailbox, allow_non_empty=params.confirm,
         )
@@ -67,8 +67,8 @@ def delete_folder(cfg: Config, params: DeleteFolderInput) -> dict:
 
 
 def copy_email(cfg: Config, params: CopyEmailInput) -> dict:
-    acct, password = _auth(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _auth(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         copied = imap_client.copy_uids(
             c, source=params.source, destination=params.destination, uids=params.uids,
         )
@@ -81,8 +81,8 @@ def copy_email(cfg: Config, params: CopyEmailInput) -> dict:
 
 
 def move_email(cfg: Config, params: MoveEmailInput) -> dict:
-    acct, password = _auth(cfg, params.account)
-    with imap_client.connect(acct, password) as c:
+    acct, creds = _auth(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
         moved = imap_client.move_uids(
             c, source=params.source, destination=params.destination, uids=params.uids
         )
@@ -95,7 +95,7 @@ def move_email(cfg: Config, params: MoveEmailInput) -> dict:
 
 
 def mark(cfg: Config, params: MarkFlagsInput) -> dict:
-    acct, password = _auth(cfg, params.account)
+    acct, creds = _auth(cfg, params.account)
     add: list[str] = []
     remove: list[str] = []
     if params.mark_read is True:
@@ -106,7 +106,7 @@ def mark(cfg: Config, params: MarkFlagsInput) -> dict:
         add.append("\\Flagged")
     elif params.mark_flagged is False:
         remove.append("\\Flagged")
-    with imap_client.connect(acct, password) as c:
+    with imap_client.connect(acct, creds) as c:
         affected = imap_client.set_flags(
             c,
             mailbox=params.mailbox,
@@ -118,7 +118,7 @@ def mark(cfg: Config, params: MarkFlagsInput) -> dict:
 
 
 def delete_email(cfg: Config, params: DeleteEmailInput) -> dict:
-    acct, password = _auth(cfg, params.account)
+    acct, creds = _auth(cfg, params.account)
     if params.permanent:
         allow_perm = (
             os.environ.get("MAIL_MCP_ALLOW_PERMANENT_DELETE", "false").lower() == "true"
@@ -132,7 +132,7 @@ def delete_email(cfg: Config, params: DeleteEmailInput) -> dict:
             raise OperationDisabled(
                 "Permanent delete requires the caller to pass confirm=true."
             )
-    with imap_client.connect(acct, password) as c:
+    with imap_client.connect(acct, creds) as c:
         affected = imap_client.delete_uids(
             c,
             mailbox=params.mailbox,

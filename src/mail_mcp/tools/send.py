@@ -24,7 +24,7 @@ from collections import defaultdict, deque
 
 from .. import smtp_client
 from ..config import Config
-from ..keyring_store import get_password
+from ..credentials import resolve_auth
 from .schemas import SendEmailInput
 
 
@@ -87,7 +87,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         raise SendDisabled("send_email requires the caller to pass confirm=true.")
     acct = cfg.account(params.account)
     _check_rate_limit(acct.alias)
-    password = get_password(acct.alias, acct.email)
+    creds = resolve_auth(acct)
     msg, bcc = smtp_client.build_message_with_bcc(
         from_addr=acct.email,
         to=params.to,
@@ -98,7 +98,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         in_reply_to=params.in_reply_to,
         references=params.references,
     )
-    message_id = smtp_client.send(acct, password, msg, bcc=bcc)
+    message_id = smtp_client.send(acct, creds, msg, bcc=bcc)
     return {
         "account": acct.alias,
         "message_id": message_id,
