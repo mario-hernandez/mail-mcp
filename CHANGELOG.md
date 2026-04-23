@@ -9,6 +9,22 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.1] — 2026-04-23
+
+### Added
+
+- The MCP server now advertises a concise `instructions` string on
+  connect (MCP protocol field). It enumerates the 22 tools grouped by
+  gate level, describes the `download_attachment` flow explicitly, and
+  flags the two gotchas that most reliably confuse LLMs: IMAP SEARCH is
+  ASCII-only, and localised folder names are detected automatically
+  (so the model should not try to guess "Drafts" vs "Borradores"). One
+  downstream Claude Code session claimed mail-mcp "cannot download
+  attachments" and suggested falling back to Microsoft Graph — the new
+  instructions block that failure mode at the handshake.
+- README: "Common flows (for LLMs)" subsection with the
+  search → get_email → download_attachment recipe spelled out.
+
 ## [0.3.0] — 2026-04-23
 
 ### Added — Microsoft 365 OAuth2 (browser sign-in)

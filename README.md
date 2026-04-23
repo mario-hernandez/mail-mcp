@@ -67,6 +67,27 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 
 When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the write tools **are not visible to the model at all** — it cannot enumerate them, let alone call them.
 
+### Common flows (for LLMs)
+
+The server advertises a concise `instructions` string on connect so the
+assistant knows what mail-mcp exposes without having to guess. A couple of
+recipes that reliably confuse LLMs otherwise:
+
+- **Downloading an attachment.** `search_emails` → `get_email` (note the
+  matching attachment `index`) → `download_attachment` with that
+  `index` and a sensible `filename`. The tool writes
+  `~/Downloads/mail-mcp/<alias>/<filename>` and returns the absolute
+  path; the assistant then uses its own file-reading tool on that path.
+  There is no need for Microsoft Graph, `az login`, OWA links, or manual
+  download steps.
+- **Targeting an account.** Pass `account="<alias>"` to every tool to
+  scope it. Omitting the argument uses the account marked as default in
+  `~/.config/mail-mcp/config.json`.
+- **IMAP SEARCH is ASCII-only.** Use `"nomina"`, not `"nómina"`.
+  Localised folder names (Borradores, Papelera, Elementos eliminados, …)
+  are auto-detected at setup and live on the account record, so tools
+  pick them up transparently.
+
 ## Install
 
 ```bash

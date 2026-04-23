@@ -60,9 +60,62 @@ def write_enabled() -> bool:
     return os.environ.get("MAIL_MCP_WRITE_ENABLED", "false").lower() == "true"
 
 
+SERVER_INSTRUCTIONS = """\
+mail-mcp is a privacy-first IMAP/SMTP server for email. It works with every
+account configured via `mail-mcp init` (password or OAuth2 for Microsoft 365).
+When the user asks about email, do not guess about capabilities — this MCP
+exposes the tools listed below. Call them directly.
+
+READ (always enabled):
+  - list_accounts         — show every configured account with its alias.
+  - get_account_info      — host/port/mailbox settings for one account.
+  - get_special_folders   — resolve localised Drafts/Sent/Trash/Junk names.
+  - list_folders          — list IMAP folders (pattern or subscribed-only).
+  - search_emails         — structured IMAP search (from/to/subject/body/date).
+  - get_email             — fetch one email (header, body, attachment list).
+  - get_thread            — messages in the same thread as a given UID.
+  - list_attachments      — attachments metadata only (filename, size, type).
+  - download_attachment   — WRITE attachment bytes to
+                            ~/Downloads/mail-mcp/<alias>/<file>. Use this
+                            for PDFs, invoices, payslips, any binary.
+                            No Graph API / browser / manual step needed.
+  - get_quota             — IMAP QUOTA (used/limit) for a folder.
+  - list_drafts           — list messages in the Drafts mailbox.
+
+DRAFTS (always enabled — preferred write path):
+  - save_draft, reply_draft, forward_draft, update_draft
+  - A draft lands in the user's Drafts mailbox; they review and send from
+    their own mail client. Prefer drafts over send_email.
+
+DESTRUCTIVE (registered only when MAIL_MCP_WRITE_ENABLED=true):
+  - create_folder, rename_folder, delete_folder
+  - copy_email, move_email, mark_emails, delete_emails
+
+SEND (registered only when MAIL_MCP_SEND_ENABLED=true + WRITE_ENABLED=true):
+  - send_email — requires `confirm=true` and has a per-account hourly
+    rate limit. Drafts are still the recommended path.
+
+Common patterns:
+  * To download an email attachment: call search_emails → get_email (to see
+    the attachments array and their indices) → download_attachment with the
+    matching index. The tool writes the file and returns the absolute path.
+    You then use Read on that path.
+  * To work with a specific account pass `account="<alias>"`. Omit it to
+    use the default account.
+  * IMAP SEARCH is plain-ASCII only; do not pass accented characters in
+    subject/body filters — use the unaccented form.
+  * Localised folders (Borradores, Papelera, Elementos eliminados, …) are
+    auto-detected at setup and stored on the account; the tools work with
+    them transparently.
+
+If an LLM tells the user "mail-mcp cannot download attachments" or suggests
+using Graph API / manual download, it is wrong — call download_attachment.
+"""
+
+
 def build_server(cfg: Config | None = None) -> Server:
     cfg = cfg or load()
-    server: Server = Server("mail-mcp")
+    server: Server = Server("mail-mcp", instructions=SERVER_INSTRUCTIONS)
 
     readonly_tools: list[tuple[Tool, type, Any]] = [
         (
