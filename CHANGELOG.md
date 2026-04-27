@@ -7,6 +7,10 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [0.3.2] — 2026-04-27
+
 ### Removed
 
 - `download_attachment` no longer returns the `preview_base64` field. The
@@ -32,6 +36,11 @@ minor bump and are called out explicitly.
   users had to know to run `mail-mcp init` again. Other OAuth errors
   (network, transient) preserve the refresh token so they can recover
   on retry.
+
+### Fixed
+
+- `mail_mcp.__version__` was lagging at `0.2.5` while `pyproject.toml`
+  had moved to `0.3.x`. Both now report the same version.
 
 ## [0.3.1] — 2026-04-23
 
