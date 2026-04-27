@@ -34,7 +34,10 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Literal
-from xml.etree import ElementTree as ET
+from xml.etree import ElementTree as ET  # noqa: S405 — Element type only; parsing uses defusedxml
+
+import defusedxml.ElementTree as DET
+from defusedxml import DefusedXmlException
 
 from .safety.tls import create_tls_context
 from .safety.validation import validate_email_address
@@ -225,12 +228,12 @@ def _fetch_autoconfig(url: str, *, timeout: float) -> Discovery | None:
 
 def _parse_clientconfig_xml(body: bytes) -> Discovery | None:
     try:
-        # S314: response is capped at 256 KiB and fetched over HTTPS from the
-        # user's own provider (or Mozilla ISPDB). stdlib ET doesn't expand
-        # external entities in Python 3.7+; billion-laughs is bounded by the
-        # size cap.
-        root = ET.fromstring(body)  # noqa: S314
-    except ET.ParseError:
+        # Parsing goes through ``defusedxml`` so a malicious ``autoconfig.xml``
+        # cannot fire a billion-laughs / external-entity attack regardless of
+        # what the size cap allows through. We keep stdlib ``ET`` only for the
+        # ``Element`` type annotation in :func:`_pick_server`.
+        root = DET.fromstring(body)
+    except (ET.ParseError, DefusedXmlException):
         return None
     provider = root.find("emailProvider")
     if provider is None:

@@ -7,7 +7,31 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Removed
+
+- `download_attachment` no longer returns the `preview_base64` field. The
+  first 2 KiB of every downloaded file were base64-encoded back into the
+  agent's context, which costs ~700–900 tokens per call and is unreadable
+  noise for binary types (PDF/image/zip). The file is already written to
+  disk; agents that need the bytes can read the path directly.
+
+### Security
+
+- `safety/redaction.py` now scrubs HTTP `Authorization: Bearer <token>`
+  and bare `Bearer <token>` forms from sanitised error messages.
+  Previously a Graph/MSAL HTTP error that surfaced an authorization
+  header would leak the token into the LLM-visible error text.
+- `autoconfig.py` parses provider XML through `defusedxml` instead of
+  stdlib `xml.etree.ElementTree`. Defends against billion-laughs and
+  external-entity (XXE) attacks regardless of what the 256 KiB body cap
+  allows through. New `defusedxml>=0.7.1` runtime dependency.
+- A revoked refresh token (`invalid_grant` from Microsoft) is now
+  removed from the OS keyring on first failure and the in-memory access
+  token cache for that account is cleared. Previously the dead token
+  stayed in the keyring and every subsequent call hit the same error;
+  users had to know to run `mail-mcp init` again. Other OAuth errors
+  (network, transient) preserve the refresh token so they can recover
+  on retry.
 
 ## [0.3.1] — 2026-04-23
 

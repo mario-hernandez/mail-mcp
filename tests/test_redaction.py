@@ -64,3 +64,34 @@ def test_sanitize_error_truncates():
     err = ValueError("x" * 1000)
     out = sanitize_error(err)
     assert len(out["message"]) <= 500
+
+
+def test_sanitize_error_scrubs_http_authorization_header():
+    err = RuntimeError(
+        "401 from Graph: Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.foo"
+    )
+    out = sanitize_error(err)
+    assert "eyJ0eXAi" not in out["message"]
+    assert "Bearer" not in out["message"]
+
+
+def test_sanitize_error_scrubs_bare_bearer_token():
+    err = RuntimeError("oauth2_login failed for Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+    out = sanitize_error(err)
+    assert "eyJhbGci" not in out["message"]
+
+
+def test_sanitize_error_scrubs_xoauth2_sasl_payload():
+    """The SASL XOAUTH2 string ``auth=Bearer <token>`` must never leak."""
+    err = RuntimeError(
+        "SMTP 535: rejected user=u@example.com\x01auth=Bearer ABCDEFGH12345.token\x01\x01"
+    )
+    out = sanitize_error(err)
+    assert "ABCDEFGH12345" not in out["message"]
+
+
+def test_redact_text_keeps_short_bearer_word():
+    """The literal English word ``Bearer`` must not be over-eagerly redacted."""
+    out = redact_text("Bearer of bad news arrived.")
+    # Short word after ``Bearer`` is below the 8-char token threshold.
+    assert "Bearer of bad news" in out

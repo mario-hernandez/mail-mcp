@@ -59,7 +59,17 @@ class OAuthNotInstalled(RuntimeError):
 
 
 class OAuthError(RuntimeError):
-    """Raised on any unrecoverable OAuth failure (network, consent, etc.)."""
+    """Raised on any unrecoverable OAuth failure (network, consent, etc.).
+
+    ``code`` carries the machine-readable OAuth error identifier when the
+    failure originated in MSAL (e.g. ``invalid_grant`` for a revoked refresh
+    token). Callers branch on it to decide whether to discard the cached
+    refresh token.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -102,8 +112,9 @@ def _public_client(client_id: str, tenant: str) -> Any:
 
 def _bundle(result: dict[str, Any]) -> TokenBundle:
     if "access_token" not in result:
-        err = result.get("error_description") or result.get("error") or "unknown OAuth error"
-        raise OAuthError(f"token acquisition failed: {err}")
+        code = result.get("error")
+        err = result.get("error_description") or code or "unknown OAuth error"
+        raise OAuthError(f"token acquisition failed: {err}", code=code)
     expires_in = int(result.get("expires_in", 3600))
     return TokenBundle(
         access_token=result["access_token"],

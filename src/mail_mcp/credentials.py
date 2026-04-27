@@ -75,11 +75,27 @@ def resolve_auth(account: AccountModel) -> AuthCredential:
                 "to sign in again."
             ) from exc
 
-        bundle = oauth.acquire_token_by_refresh_token(
-            refresh_token=refresh,
-            client_id=account.oauth_client_id,
-            tenant=account.oauth_tenant,
-        )
+        try:
+            bundle = oauth.acquire_token_by_refresh_token(
+                refresh_token=refresh,
+                client_id=account.oauth_client_id,
+                tenant=account.oauth_tenant,
+            )
+        except oauth.OAuthError as exc:
+            # ``invalid_grant`` from Microsoft means the stored refresh token is
+            # no longer usable (revoked, password rotated, conditional-access
+            # policy tripped). Leaving it in the keyring would loop the user
+            # through the same failure on every call; discard it so the next
+            # ``mail-mcp init`` run starts clean.
+            if getattr(exc, "code", None) == "invalid_grant":
+                keyring_store.delete_refresh_token(account.alias)
+                oauth.clear_cache(account.alias)
+                raise RuntimeError(
+                    f"refresh token for {account.alias!r} is no longer valid "
+                    "(revoked or expired). The stored token has been removed; "
+                    "re-run `mail-mcp init` to sign in again."
+                ) from exc
+            raise
         oauth.cache_access_token(account.alias, bundle)
         if bundle.refresh_token and bundle.refresh_token != refresh:
             # Microsoft rotated the refresh token — persist the new one so

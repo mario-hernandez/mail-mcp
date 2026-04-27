@@ -152,5 +152,29 @@ def test_parse_clientconfig_xml_garbage_returns_none():
     assert autoconfig._parse_clientconfig_xml(b"<root/>") is None
 
 
+def test_parse_clientconfig_xml_rejects_billion_laughs():
+    """Internal entity expansion must be blocked by defusedxml, not silently parsed."""
+    bomb = (
+        b'<?xml version="1.0"?>'
+        b'<!DOCTYPE lolz ['
+        b'<!ENTITY lol "lol">'
+        b'<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">'
+        b'<!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">'
+        b']>'
+        b'<clientConfig><emailProvider id="x">&lol3;</emailProvider></clientConfig>'
+    )
+    assert autoconfig._parse_clientconfig_xml(bomb) is None
+
+
+def test_parse_clientconfig_xml_rejects_external_entity():
+    """External-entity references (XXE) must be refused, not dereferenced."""
+    xxe = (
+        b'<?xml version="1.0"?>'
+        b'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        b'<clientConfig><emailProvider id="x">&xxe;</emailProvider></clientConfig>'
+    )
+    assert autoconfig._parse_clientconfig_xml(xxe) is None
+
+
 def test_fetch_autoconfig_rejects_http():
     assert autoconfig._fetch_autoconfig("http://example.com/c.xml", timeout=1) is None

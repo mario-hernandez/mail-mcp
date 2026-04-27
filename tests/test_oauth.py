@@ -161,3 +161,72 @@ def test_resolve_auth_oauth_without_client_id_raises(monkeypatch: pytest.MonkeyP
     )
     with pytest.raises(RuntimeError, match="missing oauth_client_id or oauth_tenant"):
         resolve_auth(acct)
+
+
+def test_bundle_attaches_oauth_error_code() -> None:
+    """A failed token acquisition surfaces the MSAL ``error`` code on OAuthError."""
+    with pytest.raises(oauth.OAuthError) as ei:
+        oauth._bundle({"error": "invalid_grant", "error_description": "AADSTS70008 expired"})
+    assert ei.value.code == "invalid_grant"
+
+
+def test_resolve_auth_invalid_grant_clears_refresh_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A revoked refresh token must be deleted from the keyring, not left to loop."""
+    oauth.clear_cache()
+    stored: dict[str, str] = {"ox": "DEAD_REFRESH"}
+    deleted: list[str] = []
+
+    monkeypatch.setattr(
+        keyring_store, "get_refresh_token", lambda a: stored[a]
+    )
+    monkeypatch.setattr(
+        keyring_store, "delete_refresh_token", lambda a: deleted.append(a) or stored.pop(a, None)
+    )
+
+    def _fake_refresh(*, refresh_token: str, client_id: str, tenant: str) -> oauth.TokenBundle:
+        raise oauth.OAuthError("token acquisition failed: AADSTS70008", code="invalid_grant")
+
+    monkeypatch.setattr(oauth, "acquire_token_by_refresh_token", _fake_refresh)
+    acct = AccountModel(
+        alias="ox",
+        email="o@example.com",
+        imap_host="outlook.office365.com",
+        smtp_host="smtp-mail.outlook.com",
+        auth="oauth-microsoft",
+        oauth_client_id="cid",
+        oauth_tenant="tid",
+    )
+    with pytest.raises(RuntimeError, match="no longer valid"):
+        resolve_auth(acct)
+    assert deleted == ["ox"]
+    assert "ox" not in stored
+
+
+def test_resolve_auth_other_oauth_error_keeps_refresh_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transient/recoverable errors (e.g. network) must NOT delete the refresh token."""
+    oauth.clear_cache()
+    stored: dict[str, str] = {"ox": "STILL_GOOD_REFRESH"}
+    deleted: list[str] = []
+
+    monkeypatch.setattr(keyring_store, "get_refresh_token", lambda a: stored[a])
+    monkeypatch.setattr(
+        keyring_store, "delete_refresh_token", lambda a: deleted.append(a)
+    )
+
+    def _fake_refresh(*, refresh_token: str, client_id: str, tenant: str) -> oauth.TokenBundle:
+        raise oauth.OAuthError("network blew up", code="temporarily_unavailable")
+
+    monkeypatch.setattr(oauth, "acquire_token_by_refresh_token", _fake_refresh)
+    acct = AccountModel(
+        alias="ox",
+        email="o@example.com",
+        imap_host="outlook.office365.com",
+        smtp_host="smtp-mail.outlook.com",
+        auth="oauth-microsoft",
+        oauth_client_id="cid",
+        oauth_tenant="tid",
+    )
+    with pytest.raises(oauth.OAuthError):
+        resolve_auth(acct)
+    assert deleted == []
+    assert stored["ox"] == "STILL_GOOD_REFRESH"

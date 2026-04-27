@@ -6,7 +6,6 @@ attacker cannot smuggle instructions through the email content.
 
 from __future__ import annotations
 
-import base64
 from dataclasses import asdict
 from pathlib import Path
 
@@ -245,5 +244,4 @@ def download_attachment(cfg: Config, params: DownloadAttachmentInput) -> dict:
         "path": str(target),
         "bytes": len(payload),
         "content_type": ctype,
-        "preview_base64": base64.b64encode(payload[:2048]).decode("ascii"),
     }

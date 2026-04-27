@@ -51,6 +51,12 @@ _SECRET_SEQUENCES = re.compile(
     r"\b(?:XOAUTH2|AUTH\s+PLAIN|AUTH\s+LOGIN)\s+[A-Za-z0-9+/=_\-]{8,}"
     # IMAP LOGIN protocol trace: LOGIN "user" "pass" — scrub the quoted pass.
     r'|\bLOGIN\s+"[^"]*"\s+"[^"]*"'
+    # HTTP Authorization header: ``Authorization: Bearer <token>`` and the
+    # bare ``Bearer <token>`` form (also covers SASL ``auth=Bearer ...``).
+    # JWT/OAuth tokens are [A-Za-z0-9._\-]+; we require at least 8 chars to
+    # avoid matching the literal word ``Bearer`` followed by an English word.
+    r"|\bBearer\s+[A-Za-z0-9._\-]{8,}"
+    r"|\bAuthorization\s*:\s*\S+"
     # key=value / key: value forms where the key is a secret label.
     r"|\b(?:pass(?:word)?|secret|token|bearer|api[_-]?key)\s*[:=]\s*\S+",
     re.IGNORECASE,
