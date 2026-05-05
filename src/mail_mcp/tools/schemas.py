@@ -171,6 +171,15 @@ class UpdateDraftInput(_AccountScoped):
     body: str | None = Field(default=None, max_length=200_000)
     in_reply_to: str | None = None
     references: list[str] | None = None
+    attachments: list[AttachmentSpec] | None = Field(
+        default=None,
+        description=(
+            "Attachment policy. Omit (default) to PRESERVE the original "
+            "draft's attachments unchanged. Pass a list of specs to REPLACE "
+            "the attachments with the new set. Pass an empty list ``[]`` to "
+            "explicitly clear all attachments."
+        ),
+    )
     preserve_message_id: bool = Field(
         default=True,
         description="Keep the original Message-ID so threaded replies still reference it.",

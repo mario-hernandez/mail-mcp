@@ -35,14 +35,75 @@ FWD_PREFIX = "Fwd: "
 MAX_QUOTED_LINES = 400
 
 
+def _has_rfc822_headers(inner: EmailMessage) -> bool:
+    """Sanity check: a parsed candidate behaves like a real RFC822 message."""
+    return any(inner.get(h) for h in ("From", "To", "Subject", "Date", "Message-ID"))
+
+
 def _attach_files(msg: EmailMessage, resolved_attachments: list) -> None:
-    """Attach pre-validated files (:class:`ResolvedAttachment`) to ``msg``."""
+    """Attach pre-validated files (:class:`ResolvedAttachment`) to ``msg``.
+
+    ``message/rfc822`` files (``.eml``) take a different path: Python's
+    ``add_attachment(bytes, maintype="message", subtype="rfc822", ...)``
+    silently drops the body on round-trip (CPython treats the bytes as
+    opaque application content rather than parsing them as a nested
+    message, and the body is lost on re-parse). The supported path is to
+    pre-parse the bytes into an :class:`EmailMessage` and attach the
+    object. If parsing produces something that does not look like a real
+    RFC822 message we fall back to ``application/octet-stream`` so the
+    bytes at least survive end-to-end.
+    """
     for att in resolved_attachments or []:
         data = att.path.read_bytes()
         maintype, _, subtype = att.content_type.partition("/")
         if not subtype:
             maintype, subtype = "application", "octet-stream"
+        if maintype == "message" and subtype == "rfc822":
+            try:
+                inner = email.message_from_bytes(data, policy=email.policy.default)
+            except Exception:  # noqa: BLE001 — malformed bytes, fall through to octet-stream
+                inner = None
+            if inner is not None and _has_rfc822_headers(inner):
+                msg.add_attachment(inner, filename=att.filename)
+                continue
+            maintype, subtype = "application", "octet-stream"
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=att.filename)
+
+
+def carry_over_attachments(src: EmailMessage, dst: EmailMessage) -> int:
+    """Copy every attachment-like part from ``src`` onto ``dst``.
+
+    Used by :func:`update_draft` to preserve a draft's attachments when
+    the caller updates only headers/body. Returns the number of parts
+    carried over. ``message/rfc822`` parts are re-attached as
+    :class:`EmailMessage` objects so the body survives the round-trip.
+    """
+    from .imap_client import _iter_attachments  # local import — avoid cycle
+
+    count = 0
+    for part in _iter_attachments(src):
+        ctype = part.get_content_type()
+        filename = part.get_filename()
+        if ctype == "message/rfc822":
+            inner_payload = part.get_payload()
+            inner = (
+                inner_payload[0]
+                if isinstance(inner_payload, list) and inner_payload
+                else None
+            )
+            if inner is None:
+                continue
+            dst.add_attachment(inner, filename=filename or None)
+        else:
+            payload = part.get_payload(decode=True) or b""
+            maintype, _, subtype = ctype.partition("/")
+            if not subtype:
+                maintype, subtype = "application", "octet-stream"
+            dst.add_attachment(
+                payload, maintype=maintype, subtype=subtype, filename=filename or None,
+            )
+        count += 1
+    return count
 
 
 def build_message(

@@ -9,6 +9,48 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.5] — 2026-04-27
+
+### Fixed
+
+- **`save_draft` no longer shrinks `.eml` attachments to a 44-byte
+  placeholder.** When the attached file's MIME type resolved to
+  `message/rfc822` (which `mimetypes.guess_type` returns for any
+  `*.eml`), the SMTP layer was calling
+  `EmailMessage.add_attachment(bytes, maintype="message", subtype="rfc822", ...)`.
+  CPython's content manager treats those bytes as opaque application
+  content rather than parsing them as a nested message, so the body was
+  silently dropped on serialise/parse round-trip and the user-supplied
+  filename was overwritten with `forwarded-message.eml` on read-back.
+  The SMTP layer now pre-parses the bytes into an `EmailMessage` and
+  attaches the object via `add_attachment(message_obj, filename=...)`,
+  which is the supported path. Malformed `.eml` content falls back to
+  `application/octet-stream` so the bytes still survive end-to-end.
+- **`update_draft` now preserves attachments by default.** A call like
+  `update_draft(uid=N, cc=[...])` used to silently drop every
+  attachment from the original draft because `build_message` was called
+  without an `attachments` argument and no carry-over logic existed.
+  Semantics now match `preserve_message_id` / `in_reply_to`:
+  - `attachments` omitted (`None`) — preserve original attachments.
+  - `attachments=[]` — explicitly clear all attachments.
+  - `attachments=[spec, ...]` — replace with the new set.
+- `_extract_parts` and `download_attachment` now prefer the
+  `message/rfc822` part's own `Content-Disposition: filename=` header
+  over the inner Subject, so the filename a caller passed to
+  `save_draft` round-trips correctly via `list_attachments` and
+  `download_attachment`.
+
+### Added
+
+- New helper `smtp_client.carry_over_attachments(src, dst)` — copies
+  every attachment-like part from one `EmailMessage` to another,
+  re-attaching `message/rfc822` parts as objects so the body survives.
+  Used internally by `update_draft`.
+
+Both bugs reported by an external user during a BEC incident-response
+flow where ``.eml`` evidence files were being attached to drafts and
+then subtly mutated.
+
 ## [0.3.4] — 2026-04-27
 
 ### Fixed

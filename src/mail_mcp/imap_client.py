@@ -389,7 +389,10 @@ def download_attachment(
             inner_payload = part.get_payload()
             inner = inner_payload[0] if isinstance(inner_payload, list) and inner_payload else None
             payload = inner.as_bytes() if inner is not None else b""
-            filename = _eml_filename_from_subject(
+            # Prefer the part's own filename header; fall back to the inner
+            # Subject so the saved file still has a meaningful name when no
+            # explicit filename was attached.
+            filename = part.get_filename() or _eml_filename_from_subject(
                 inner.get("Subject", "") if inner is not None else ""
             )
         else:
@@ -838,9 +841,17 @@ def _extract_parts(msg: EmailMessage) -> tuple[str, str | None, list[Attachment]
                 inner_bytes = inner.as_bytes()
             except Exception:  # noqa: BLE001 — defensive, malformed nested message
                 inner_bytes = b""
+            # Prefer the part's own filename header (Content-Disposition
+            # ``filename=`` or Content-Type ``name=``); fall back to the inner
+            # Subject only when no explicit filename was attached. This lets
+            # ``save_draft(attachments=[{"filename": "evidence.eml", ...}])``
+            # round-trip the user-chosen name instead of overwriting it with
+            # ``forwarded-message.eml``.
             attachments.append(
                 Attachment(
-                    filename=_eml_filename_from_subject(inner.get("Subject", "")),
+                    filename=part.get_filename() or _eml_filename_from_subject(
+                        inner.get("Subject", "")
+                    ),
                     content_type="message/rfc822",
                     size=len(inner_bytes),
                     index=_next_index(),

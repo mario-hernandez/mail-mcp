@@ -51,15 +51,41 @@ def test_extract_parts_includes_inner_forwarded_body():
 
 
 def test_extract_parts_exposes_rfc822_as_virtual_attachment():
+    """The forwarded part is surfaced with the explicit filename when set."""
     msg = _build_forward_as_attachment()
     _text, _html, attachments = _extract_parts(msg)
     assert len(attachments) == 1
     att = attachments[0]
     assert att.content_type == "message/rfc822"
-    assert att.filename.endswith(".eml")
-    assert "Original subject" in att.filename
+    # The fixture pins ``filename="original.eml"`` on the rfc822 part —
+    # prefer that over deriving from the inner Subject.
+    assert att.filename == "original.eml"
     assert att.size > 0
     assert att.index == 0
+
+
+def test_extract_parts_falls_back_to_inner_subject_when_no_filename():
+    """If the rfc822 part has no filename header, derive one from the Subject."""
+    inner = EmailMessage(policy=email.policy.default)
+    inner["From"] = "x@e.com"
+    inner["To"] = "y@e.com"
+    inner["Subject"] = "Untagged forward subject"
+    inner.set_content("body")
+
+    outer = EmailMessage(policy=email.policy.default)
+    outer["From"] = "a@e.com"
+    outer["To"] = "b@e.com"
+    outer["Subject"] = "Fwd"
+    outer.set_content("see below")
+    # Attach without an explicit filename — the rfc822 part will have no
+    # ``Content-Disposition: attachment; filename=...`` header.
+    outer.add_attachment(inner)
+    parsed = email.message_from_bytes(outer.as_bytes(), policy=email.policy.default)
+
+    _text, _html, atts = _extract_parts(parsed)
+    assert len(atts) == 1
+    assert atts[0].filename.endswith(".eml")
+    assert "Untagged forward subject" in atts[0].filename
 
 
 def test_extract_parts_handles_empty_cover_note():

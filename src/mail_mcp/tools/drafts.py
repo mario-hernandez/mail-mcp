@@ -83,6 +83,16 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
     it (new UID), only then mark the old UID deleted and expunge. A failure
     in the APPEND step leaves the original draft untouched; a failure in the
     delete step leaves a harmless duplicate rather than data loss.
+
+    Attachment semantics:
+
+    * ``attachments`` omitted (``None``) — the original draft's attachments
+      are carried over unchanged. This matches the implicit "preserve"
+      behaviour that ``preserve_message_id`` / ``in_reply_to`` already use
+      for header-bound fields.
+    * ``attachments=[]`` — explicitly clear all attachments.
+    * ``attachments=[spec, ...]`` — replace the attachment set with the
+      supplied list.
     """
     import email as _email
     import email.policy as _policy
@@ -113,6 +123,9 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         references = params.references if params.references is not None else (
             original.get("References", "").split() or None
         )
+        new_attachments = (
+            resolve_many(params.attachments) if params.attachments else []
+        )
         msg = smtp_client.build_message(
             from_addr=acct.email,
             to=new_to,
@@ -121,7 +134,13 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             body_text=new_body,
             in_reply_to=in_reply_to,
             references=references,
+            attachments=new_attachments,
         )
+        if params.attachments is None:
+            # Preserve the original's attachments — caller did not opt in to
+            # a replacement set. Empty list means "explicitly clear", which
+            # is honoured by passing ``[]`` to ``resolve_many`` above.
+            smtp_client.carry_over_attachments(original, msg)
         if params.preserve_message_id and original.get("Message-ID"):
             del msg["Message-ID"]
             msg["Message-ID"] = original["Message-ID"]
