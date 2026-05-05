@@ -65,6 +65,21 @@ class GetEmailInput(_AccountScoped):
     max_chars: int = Field(default=16_000, ge=100, le=64_000)
 
 
+class GetEmailRawInput(_AccountScoped):
+    """Inputs for ``get_email_raw`` — escape hatch for unusual MIME structures.
+
+    Returns the message's full RFC822 source (decoded as UTF-8 with replace
+    fallback) wrapped in the untrusted-content envelope. Use when
+    ``get_email`` returns an empty body or ``list_attachments`` is missing
+    parts you can see in the user's mail client — most often forwarded
+    messages embedded as ``message/rfc822``.
+    """
+
+    mailbox: str = Field(default="INBOX", max_length=255)
+    uid: int = Field(ge=1)
+    max_bytes: int = Field(default=256_000, ge=1_000, le=2_000_000)
+
+
 class ListAttachmentsInput(_AccountScoped):
     mailbox: str = Field(default="INBOX", max_length=255)
     uid: int = Field(ge=1)

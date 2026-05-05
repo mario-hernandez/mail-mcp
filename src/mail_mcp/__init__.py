@@ -10,7 +10,7 @@ from .autoconfig import Discovery, ServerSpec, discover
 from .config import AccountModel, Config, ConfigModel
 from .config import load as load_config
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 __all__ = [
     "AccountModel",

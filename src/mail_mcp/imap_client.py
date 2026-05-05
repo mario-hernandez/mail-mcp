@@ -380,16 +380,25 @@ def download_attachment(
     for i, part in enumerate(_iter_attachments(msg)):
         if i != index:
             continue
-        payload = part.get_payload(decode=True) or b""
+        ctype = part.get_content_type() or "application/octet-stream"
+        if ctype == "message/rfc822":
+            # Embedded forwarded message — serialise the inner Message back to
+            # RFC822 bytes so the caller receives a valid ``.eml`` they can
+            # open in any mail client.
+            inner_payload = part.get_payload()
+            inner = inner_payload[0] if isinstance(inner_payload, list) and inner_payload else None
+            payload = inner.as_bytes() if inner is not None else b""
+            filename = _eml_filename_from_subject(
+                inner.get("Subject", "") if inner is not None else ""
+            )
+        else:
+            payload = part.get_payload(decode=True) or b""
+            filename = part.get_filename() or f"attachment-{index}"
         if len(payload) > max_bytes:
             raise RuntimeError(
                 f"attachment exceeds max_bytes={max_bytes} (got {len(payload)})"
             )
-        return (
-            part.get_filename() or f"attachment-{index}",
-            part.get_content_type() or "application/octet-stream",
-            payload,
-        )
+        return (filename, ctype, payload)
     raise RuntimeError(f"attachment index {index} not found on uid {uid}")
 
 
@@ -659,33 +668,150 @@ def _format_address(addr: Any) -> str:
     return f"{name} <{email_repr}>".strip() if name else email_repr
 
 
+def _is_text_attachment(part: EmailMessage) -> bool:
+    """Heuristic: is a ``text/plain`` part actually a downloadable attachment?
+
+    Some senders attach ``.txt`` files with no Content-Disposition header, and
+    we don't want to either capture them as the message body or quietly drop
+    them. Treat any ``text/plain`` with a filename as an attachment.
+    """
+    return bool(part.get_filename())
+
+
+def _is_attachment_leaf(part: EmailMessage) -> bool:
+    """True for non-text leaves and text leaves marked as attachments."""
+    disposition = (part.get_content_disposition() or "").lower()
+    ctype = part.get_content_type()
+    if disposition == "attachment":
+        return True
+    if ctype.startswith("text/") and not _is_text_attachment(part):
+        return False
+    return bool(part.get_filename()) or not ctype.startswith("text/")
+
+
+def _format_forward_divider(inner: EmailMessage) -> str:
+    """Produce a human-readable divider preceding a forwarded message body."""
+    return (
+        "\n\n--- Forwarded message ---\n"
+        f"From: {inner.get('From', '')}\n"
+        f"Date: {inner.get('Date', '')}\n"
+        f"Subject: {inner.get('Subject', '')}\n"
+        f"To: {inner.get('To', '')}\n\n"
+    )
+
+
+def _eml_filename_from_subject(subject: str) -> str:
+    """Sanitise a forwarded message's Subject into a safe ``.eml`` filename."""
+    cleaned = "".join(
+        c for c in (subject or "") if c.isprintable() and c not in '\\/:*?"<>|\r\n\0'
+    ).strip()
+    base = (cleaned or "forwarded-message")[:60]
+    return f"{base}.eml"
+
+
 def _extract_parts(msg: EmailMessage) -> tuple[str, str | None, list[Attachment]]:
-    text_part = ""
-    html_part: str | None = None
+    """Render a message's body and enumerate its top-level attachments.
+
+    Forward-as-attachment messages (Outlook/Exchange style with a
+    ``message/rfc822`` part) are unfolded so:
+
+    * the inner text/plain (or a text rendering of inner text/html) is
+      appended to the outer body with a "--- Forwarded message ---" divider;
+    * the ``message/rfc822`` part is *also* surfaced as a virtual attachment
+      with ``content_type=message/rfc822`` so callers can ``download_attachment``
+      it as ``.eml`` for full-fidelity inspection.
+
+    Attachments belonging to the *inner* forwarded message are intentionally
+    NOT promoted to the outer attachment list — they are children of the
+    embedded ``.eml`` and a caller that needs them will download the ``.eml``
+    and parse it locally. This keeps the index space unambiguous.
+    """
+    text_chunks: list[str] = []
+    html_chunks: list[str] = []
     attachments: list[Attachment] = []
-    idx = 0
-    for part in msg.walk():
-        if part.is_multipart():
-            continue
-        disposition = (part.get_content_disposition() or "").lower()
+    counter = [0]
+
+    def _next_index() -> int:
+        i = counter[0]
+        counter[0] = i + 1
+        return i
+
+    def _collect_inner_text(part: EmailMessage) -> None:
+        """Walk a forwarded ``message/rfc822``'s body for text only.
+
+        Does not register attachments — those belong to the nested ``.eml``
+        and are reachable by downloading it. Nested forwards inside this
+        forward have their *headers* announced via a divider but their
+        bodies are not unfolded again, to bound output size and recursion.
+        """
         ctype = part.get_content_type()
-        if disposition == "attachment" or (part.get_filename() and ctype != "text/plain"):
+        if ctype == "message/rfc822":
+            inner_payload = part.get_payload()
+            inner = inner_payload[0] if isinstance(inner_payload, list) and inner_payload else None
+            if inner is not None:
+                text_chunks.append(_format_forward_divider(inner))
+            return
+        if part.is_multipart():
+            for child in part.iter_parts():
+                _collect_inner_text(child)
+            return
+        if _is_attachment_leaf(part):
+            return
+        if ctype == "text/plain":
+            text_chunks.append(_safe_get_content(part))
+        elif ctype == "text/html":
+            html_chunks.append(_safe_get_content(part))
+
+    def _visit(part: EmailMessage) -> None:
+        ctype = part.get_content_type()
+
+        if ctype == "message/rfc822":
+            inner_payload = part.get_payload()
+            inner = inner_payload[0] if isinstance(inner_payload, list) and inner_payload else None
+            if inner is None:
+                return
+            try:
+                inner_bytes = inner.as_bytes()
+            except Exception:  # noqa: BLE001 — defensive, malformed nested message
+                inner_bytes = b""
+            attachments.append(
+                Attachment(
+                    filename=_eml_filename_from_subject(inner.get("Subject", "")),
+                    content_type="message/rfc822",
+                    size=len(inner_bytes),
+                    index=_next_index(),
+                )
+            )
+            text_chunks.append(_format_forward_divider(inner))
+            _collect_inner_text(inner)
+            return
+
+        if part.is_multipart():
+            for child in part.iter_parts():
+                _visit(child)
+            return
+
+        if _is_attachment_leaf(part):
             payload = part.get_payload(decode=True) or b""
             attachments.append(
                 Attachment(
-                    filename=part.get_filename() or f"attachment-{idx}",
+                    filename=part.get_filename() or f"attachment-{counter[0]}",
                     content_type=ctype,
                     size=len(payload),
-                    index=idx,
+                    index=_next_index(),
                 )
             )
-            idx += 1
-            continue
-        if ctype == "text/plain" and not text_part:
-            text_part = _safe_get_content(part)
-        elif ctype == "text/html" and html_part is None:
-            html_part = _safe_get_content(part)
-    return text_part, html_part, attachments
+            return
+
+        if ctype == "text/plain":
+            text_chunks.append(_safe_get_content(part))
+        elif ctype == "text/html":
+            html_chunks.append(_safe_get_content(part))
+
+    _visit(msg)
+    text = "".join(text_chunks).strip()
+    html = "\n".join(html_chunks) if html_chunks else None
+    return text, html, attachments
 
 
 def _safe_get_content(part: EmailMessage) -> str:
@@ -706,11 +832,23 @@ def _safe_get_content(part: EmailMessage) -> str:
 
 
 def _iter_attachments(msg: EmailMessage):
-    for part in msg.walk():
-        if part.is_multipart():
-            continue
-        disposition = (part.get_content_disposition() or "").lower()
-        if disposition == "attachment" or (
-            part.get_filename() and part.get_content_type() != "text/plain"
-        ):
+    """Yield top-level attachment-like parts in the same order as :func:`_extract_parts`.
+
+    Includes ``message/rfc822`` parts so a caller can download a forwarded
+    message as ``.eml``. Inner attachments of a forwarded message are NOT
+    yielded; they belong to the nested ``.eml`` and are reachable only by
+    parsing that file.
+    """
+    def _walk_top_level(part: EmailMessage):
+        ctype = part.get_content_type()
+        if ctype == "message/rfc822":
             yield part
+            return
+        if part.is_multipart():
+            for child in part.iter_parts():
+                yield from _walk_top_level(child)
+            return
+        if _is_attachment_leaf(part):
+            yield part
+
+    yield from _walk_top_level(msg)

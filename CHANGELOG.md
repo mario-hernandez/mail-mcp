@@ -9,6 +9,36 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.3] — 2026-04-27
+
+### Fixed
+
+- **Forward-as-attachment messages no longer return an empty body.**
+  Outlook/Exchange-style forwards that embed the original message as a
+  `message/rfc822` MIME part used to surface as `body=""` and
+  `attachments=[]` from `get_email` and `list_attachments`, leaving the
+  forwarded content unreachable. The body extractor now descends into the
+  `message/rfc822` part and appends its text under a
+  `--- Forwarded message ---` divider with the inner From / Date / Subject /
+  To headers. Inner attachments stay scoped to the embedded `.eml` to keep
+  the index space unambiguous. Reported by an external user against
+  Outlook 365 forwards.
+
+### Added
+
+- The embedded forwarded message is now exposed as a virtual attachment
+  with `content_type="message/rfc822"`. `download_attachment` serialises
+  it back to RFC822 bytes and writes it to disk as a `.eml` file, ready
+  to open in any mail client.
+- New tool `get_email_raw(account, mailbox, uid, max_bytes=256_000)` —
+  escape hatch returning the message's full RFC822 source (capped, wrapped
+  in the untrusted-content envelope, also saved to
+  `~/Downloads/mail-mcp/<account>/raw-uid-<uid>.eml`). Use when
+  `get_email`'s rendered body is still empty or `list_attachments` is
+  missing parts visible in the user's mail client.
+- Server `instructions` updated to mention the rfc822 unfolding behaviour
+  and the new `get_email_raw` tool.
+
 ## [0.3.2] — 2026-04-27
 
 ### Removed

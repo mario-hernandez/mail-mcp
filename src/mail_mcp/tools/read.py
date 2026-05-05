@@ -18,6 +18,7 @@ from .schemas import (
     AccountInfoInput,
     DownloadAttachmentInput,
     GetEmailInput,
+    GetEmailRawInput,
     GetQuotaInput,
     GetThreadInput,
     ListAccountsInput,
@@ -120,6 +121,44 @@ def get_email(cfg: Config, params: GetEmailInput) -> dict:
         "attachments": [_sanitize_attachment(asdict(a)) for a in body.attachments],
         "truncated": body.truncated,
         "body": wrap_untrusted(body.text),
+    }
+
+
+def get_email_raw(cfg: Config, params: GetEmailRawInput) -> dict:
+    """Return the message's raw RFC822 source as decoded text.
+
+    The escape hatch for unusual MIME structures (forwarded messages embedded
+    as ``message/rfc822``, broken multiparts, exotic encodings). Truncates at
+    ``max_bytes`` and wraps the rendered text in the untrusted-content
+    envelope. The full bytes are also written to disk under
+    ``~/Downloads/mail-mcp/<alias>/`` as a ``.eml`` so the caller can read or
+    parse them locally without burning tokens on a re-fetch.
+    """
+    acct, creds = _resolve(cfg, params.account)
+    with imap_client.connect(acct, creds) as c:
+        raw, headers = imap_client.fetch_raw_message(
+            c, mailbox=params.mailbox, uid=params.uid,
+        )
+    truncated = len(raw) > params.max_bytes
+    rendered_bytes = raw[: params.max_bytes] if truncated else raw
+    rendered = rendered_bytes.decode("utf-8", errors="replace")
+    root: Path = default_download_root()
+    target = prepare_download_path(
+        root,
+        acct.alias,
+        f"raw-uid-{params.uid}.eml",
+    )
+    target.write_bytes(raw)
+    target.chmod(0o600)
+    return {
+        "account": acct.alias,
+        "mailbox": params.mailbox,
+        "uid": params.uid,
+        "bytes": len(raw),
+        "truncated": truncated,
+        "saved_path": str(target),
+        "headers": _sanitize_header_dict(headers),
+        "raw": wrap_untrusted(rendered),
     }
 
 

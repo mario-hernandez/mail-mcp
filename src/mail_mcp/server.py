@@ -35,6 +35,7 @@ from .tools.schemas import (
     DownloadAttachmentInput,
     ForwardDraftInput,
     GetEmailInput,
+    GetEmailRawInput,
     GetQuotaInput,
     GetThreadInput,
     ListAccountsInput,
@@ -79,6 +80,15 @@ READ (always enabled):
                             ~/Downloads/mail-mcp/<alias>/<file>. Use this
                             for PDFs, invoices, payslips, any binary.
                             No Graph API / browser / manual step needed.
+                            For Outlook 'Forward as attachment' the inner
+                            forwarded message is exposed as a virtual
+                            ``message/rfc822`` attachment and downloads as
+                            a ``.eml``.
+  - get_email_raw         — escape hatch: full RFC822 source of one email
+                            (also saved as .eml on disk). Reach for this
+                            when get_email's body is still empty or
+                            list_attachments is missing parts you can see
+                            in the user's mail client.
   - get_quota             — IMAP QUOTA (used/limit) for a folder.
   - list_drafts           — list messages in the Drafts mailbox.
 
@@ -232,6 +242,23 @@ def build_server(cfg: Config | None = None) -> Server:
             ),
             ListAttachmentsInput,
             read.list_attachments,
+        ),
+        (
+            Tool(
+                name="get_email_raw",
+                description=(
+                    "Escape hatch: return the message's full RFC822 source. "
+                    "Use when get_email returns an empty body or "
+                    "list_attachments is missing parts visible in the user's "
+                    "mail client (most often Outlook 'Forward as attachment' "
+                    "with a nested message/rfc822 part). Bytes are also saved "
+                    "to ~/Downloads/mail-mcp/<account>/raw-uid-<uid>.eml."
+                ),
+                inputSchema=GetEmailRawInput.model_json_schema(),
+                annotations={"readOnlyHint": True},
+            ),
+            GetEmailRawInput,
+            read.get_email_raw,
         ),
         (
             Tool(
