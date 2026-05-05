@@ -126,6 +126,22 @@ class AttachmentSpec(BaseModel):
         default=None, max_length=255,
         description="MIME type override. When omitted it is inferred from the filename.",
     )
+    raw_passthrough: bool = Field(
+        default=False,
+        description=(
+            "Forensic mode: send the file's bytes byte-for-byte, no parsing. "
+            "Useful when SHA-256 byte-identity matters (chain-of-custody, "
+            "eIDAS sealing, evidence preservation). Forces "
+            "``application/octet-stream`` with base64 CTE regardless of the "
+            "file's actual type — Python and most mail libraries "
+            "re-canonicalize ``message/rfc822`` and other structured parts "
+            "on parse, which would break the byte-identity guarantee. The "
+            "recipient receives opaque bytes they can save and hash against "
+            "the original. Default ``False`` keeps semantic content types "
+            "(``.eml`` arrives as ``message/rfc822`` and renders as a "
+            "forwarded message, etc.)."
+        ),
+    )
 
 
 class ListAccountsInput(BaseModel):

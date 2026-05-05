@@ -9,6 +9,28 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.6] — 2026-04-27
+
+### Added
+
+- **`AttachmentSpec.raw_passthrough` flag** — forensic mode for
+  attachment delivery. When ``True``, the file's bytes are sent
+  byte-for-byte (base64-encoded but without any parsing) so the
+  recipient can verify ``SHA-256(received) == SHA-256(source)``.
+  Forces ``application/octet-stream`` regardless of the file's actual
+  type because Python's email parser (and most mail libraries)
+  re-canonicalize ``message/rfc822`` and other structured parts on
+  parse, which would silently break the byte-identity guarantee.
+  Trade-off documented in the schema: the recipient receives opaque
+  bytes (``.eml`` won't auto-render as a forwarded message; they save
+  the file and rename if needed) but SHA-256 is preserved end-to-end
+  through ``save_draft`` → IMAP → ``download_attachment``.
+  Default ``False`` keeps the v0.3.5 semantic-content-type behaviour
+  (``.eml`` arrives as ``message/rfc822``, recipient's mail client
+  auto-renders, but a few hundred bytes of canonicalisation are
+  expected). Use case: chain-of-custody, eIDAS sealing, notarised
+  evidence preservation.
+
 ## [0.3.5] — 2026-04-27
 
 ### Fixed

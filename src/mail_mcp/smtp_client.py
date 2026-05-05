@@ -58,6 +58,21 @@ def _attach_files(msg: EmailMessage, resolved_attachments: list) -> None:
         maintype, _, subtype = att.content_type.partition("/")
         if not subtype:
             maintype, subtype = "application", "octet-stream"
+        if getattr(att, "raw_passthrough", False):
+            # Forensic mode: bytes survive byte-for-byte. Force
+            # ``application/octet-stream`` + base64 CTE so neither Python
+            # nor the recipient's parser can re-canonicalize the body
+            # (which would happen for ``message/rfc822`` and other
+            # structured types). The receiver gets opaque bytes whose
+            # SHA-256 matches the source on disk.
+            msg.add_attachment(
+                data,
+                maintype="application",
+                subtype="octet-stream",
+                filename=att.filename,
+                cte="base64",
+            )
+            continue
         if maintype == "message" and subtype == "rfc822":
             try:
                 inner = email.message_from_bytes(data, policy=email.policy.default)

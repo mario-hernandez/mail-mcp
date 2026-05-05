@@ -43,6 +43,7 @@ class ResolvedAttachment:
     filename: str
     content_type: str
     size: int
+    raw_passthrough: bool = False
 
 
 def resolve(
@@ -50,6 +51,7 @@ def resolve(
     raw_path: str,
     filename_override: str | None,
     content_type_override: str | None,
+    raw_passthrough: bool = False,
 ) -> ResolvedAttachment:
     if not raw_path:
         raise ValidationError("attachment path must not be empty")
@@ -89,7 +91,13 @@ def resolve(
     else:
         guessed, _ = mimetypes.guess_type(filename)
         ctype = guessed or "application/octet-stream"
-    return ResolvedAttachment(path=resolved, filename=filename, content_type=ctype, size=size)
+    return ResolvedAttachment(
+        path=resolved,
+        filename=filename,
+        content_type=ctype,
+        size=size,
+        raw_passthrough=raw_passthrough,
+    )
 
 
 def resolve_many(specs) -> list[ResolvedAttachment]:
@@ -99,10 +107,22 @@ def resolve_many(specs) -> list[ResolvedAttachment]:
     resolved: list[ResolvedAttachment] = []
     total = 0
     for spec in specs:
-        raw_path = getattr(spec, "path", None) or spec.get("path") if isinstance(spec, dict) else spec.path
-        filename = getattr(spec, "filename", None) if hasattr(spec, "filename") else spec.get("filename")
-        ctype = getattr(spec, "content_type", None) if hasattr(spec, "content_type") else spec.get("content_type")
-        res = resolve(raw_path=raw_path, filename_override=filename, content_type_override=ctype)
+        if isinstance(spec, dict):
+            raw_path = spec.get("path")
+            filename = spec.get("filename")
+            ctype = spec.get("content_type")
+            raw_pt = bool(spec.get("raw_passthrough", False))
+        else:
+            raw_path = getattr(spec, "path", None)
+            filename = getattr(spec, "filename", None)
+            ctype = getattr(spec, "content_type", None)
+            raw_pt = bool(getattr(spec, "raw_passthrough", False))
+        res = resolve(
+            raw_path=raw_path,
+            filename_override=filename,
+            content_type_override=ctype,
+            raw_passthrough=raw_pt,
+        )
         total += res.size
         if total > MAX_TOTAL_ATTACHMENT_BYTES:
             raise ValidationError(
