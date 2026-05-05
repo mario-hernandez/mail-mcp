@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mail-mcp"
-version = "0.3.3"
+version = "0.3.4"
 description = "A privacy-first IMAP/SMTP MCP server for Claude Desktop, Claude Code, and Codex CLI."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from email.message import EmailMessage
+from html.parser import HTMLParser
 from typing import Any
 
 from imapclient import IMAPClient, SocketTimeout
@@ -668,6 +669,69 @@ def _format_address(addr: Any) -> str:
     return f"{name} <{email_repr}>".strip() if name else email_repr
 
 
+class _HTMLTextExtractor(HTMLParser):
+    """Render an HTML body to a readable plain-text approximation.
+
+    Not a full reflow engine — designed to give the LLM something legible
+    when a message is single-part ``text/html`` with no ``text/plain``
+    alternative (typical of Outlook 'Forward inline'). Block-level tags
+    flush a newline; ``<br>`` flushes a newline; the contents of
+    ``<script>``, ``<style>``, ``<head>`` and ``<title>`` are dropped.
+    """
+
+    _BLOCK_TAGS = frozenset({
+        "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "blockquote", "pre", "hr", "table", "thead", "tbody", "tfoot",
+        "address", "article", "aside", "footer", "header", "nav", "section",
+    })
+    _SKIP_TAGS = frozenset({"script", "style", "head", "title"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._buf: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag == "br":
+            self._buf.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag in self._BLOCK_TAGS:
+            self._buf.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self._buf.append(data)
+
+    def get_text(self) -> str:
+        text = "".join(self._buf)
+        # Normalise line endings (HTML source frequently carries CRLF that
+        # otherwise survives as literal ``\r\n`` in the rendered text).
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # Collapse runs of inline whitespace and limit blank-line clusters.
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+def _html_to_text(html: str) -> str:
+    """Best-effort HTML → plain-text fallback for HTML-only messages."""
+    if not html:
+        return ""
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # noqa: BLE001 — parser is best-effort, don't crash get_email
+        return html
+    return parser.get_text()
+
+
 def _is_text_attachment(part: EmailMessage) -> bool:
     """Heuristic: is a ``text/plain`` part actually a downloadable attachment?
 
@@ -811,6 +875,11 @@ def _extract_parts(msg: EmailMessage) -> tuple[str, str | None, list[Attachment]
     _visit(msg)
     text = "".join(text_chunks).strip()
     html = "\n".join(html_chunks) if html_chunks else None
+    # Single-part text/html messages (common from Outlook 'Forward inline')
+    # have no text/plain alternative. Render the HTML so the body field is
+    # not silently empty.
+    if not text and html:
+        text = _html_to_text(html)
     return text, html, attachments
 
 

@@ -9,7 +9,28 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
-## [0.3.3] — 2026-04-27
+## [0.3.4] — 2026-04-27
+
+### Fixed
+
+- **HTML-only emails no longer return an empty body.** Single-part
+  ``text/html`` messages (typical of Outlook 365 "Forward inline" — no
+  ``text/plain`` alternative, base64-encoded body, ``Content-ID``
+  header) used to surface as ``body=""`` from ``get_email``: the HTML
+  was captured into ``EmailBody.html_rendered`` but only
+  ``EmailBody.text`` was returned to the caller, so the LLM saw nothing.
+  The body extractor now renders the HTML to a plain-text approximation
+  via ``html.parser`` (stdlib, no new dependency) when no
+  ``text/plain`` alternative exists. ``script`` / ``style`` /
+  ``head`` / ``title`` content is dropped, block-level tags flush
+  newlines, entities are decoded, and CRLF noise from the source is
+  normalised. Multipart messages with a ``text/plain`` alternative are
+  unaffected. Reported by an external user against Outlook 365 forwards.
+
+  Was always-broken: any v0.3.x and earlier returned empty bodies for
+  HTML-only mail. Most personal mail is ``multipart/alternative`` so
+  the bug was masked until users started forwarding from Outlook
+  inline.
 
 ### Fixed
 
