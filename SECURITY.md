@@ -4,7 +4,7 @@
 
 ## Reporting a vulnerability
 
-Please email **m@mariohernandez.es** with the subject prefix `[mail-mcp]`. Include:
+Please email **developer@supera.dev** with the subject prefix `[mail-mcp]`. Include:
 
 - a description of the issue
 - a reproducer or proof of concept
@@ -43,7 +43,10 @@ HTTPS is non-negotiable — HTTP URLs are rejected. Every call is capped at thre
 - **Prompt-injection guard.** Email bodies surfaced to the LLM are wrapped in a `<untrusted_email_content>` envelope with an explicit warning. Closing-tag breakouts and zero-width characters are neutralised before wrapping.
 - **Bounded outputs.** Body chars ≤ 64k (default 16k), attachments ≤ 25 MiB, batch UIDs ≤ 100, search results ≤ 500.
 - **Filesystem allowlist.** Attachment downloads are anchored under `~/Downloads/mail-mcp/<account>/` and resolved symlink-safely; `..` and absolute paths are rejected.
-- **Error sanitisation.** Exceptions are surfaced to the LLM as `{type, message}` with substrings around `LOGIN`/`PASS`/`XOAUTH2` redacted.
+- **Error sanitisation.** Exceptions are surfaced to the LLM as `{type, message}` with `XOAUTH2` / `AUTH PLAIN` / `AUTH LOGIN` blobs, IMAP `LOGIN "user" "pass"` traces, `password=…` / `secret=…` / `token=…` / `api-key=…` key-value pairs, and HTTP `Authorization: Bearer <token>` (plus the bare `Bearer <jwt>` form) redacted, alongside emails and hostnames.
+- **XML hardening.** Provider autoconfig responses are parsed through [`defusedxml`](https://pypi.org/project/defusedxml/), defending against billion-laughs and external-entity (XXE) attacks regardless of what the response-size cap allows through.
+- **OAuth refresh-token recovery.** When Microsoft returns `invalid_grant` (revoked refresh token, password rotation, conditional-access policy), the dead token is removed from the OS keyring and the in-memory access-token cache for that account is cleared, so the next call surfaces a clean "re-run `mail-mcp init`" instead of silently looping the same revoked token.
+- **Forensic mode for attachments.** `AttachmentSpec.raw_passthrough=true` forces `application/octet-stream` + base64 CTE for an attachment, guaranteeing `SHA-256(received) == SHA-256(source-on-disk)` end-to-end. Useful for chain-of-custody preservation.
 - **Zero outbound network beyond your IMAP/SMTP servers.** No telemetry, no update checks, no relays, no third-party APIs.
 
 ## Threat model (summary)

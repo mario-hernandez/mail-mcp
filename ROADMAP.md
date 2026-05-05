@@ -5,23 +5,40 @@ _Consolidated from a 10-agent parallel research sweep; the full notes live in
 new account wired up: detect what the user already has, fill what we can, and
 ask only for what we must._
 
-> **Release snapshot (2026-04-17)**
-> * v0.2.0 shipped the interactive wizard + 5-tier autoconfig waterfall.
-> * v0.2.1 pivoted to security hardening and onboarding polish (see
->   [`CHANGELOG.md`](CHANGELOG.md)). Importers were deferred to v0.2.3.
-> * v0.2.2 shipped `reply_draft`, `forward_draft` (attached as
->   `message/rfc822` so the body never re-enters the LLM), and a per-account
->   hourly rate limit on `send_email`.
-> * v0.2.3 added `create_folder`, `rename_folder`, `delete_folder`.
-> * v0.2.4 ("feels like a real mail client") added `copy_email`,
->   `get_thread`, `get_special_folders`, `get_quota`, `list_drafts`,
->   `update_draft`, `send_draft`, `list_accounts`, `get_account_info`, and
->   disk-path attachments. See [`docs/V024_PLAN.md`](docs/V024_PLAN.md) for
->   what was considered and explicitly deferred.
-> * v0.2.5 (next) is HTML body + `bleach` sanitiser, `sort_emails`, Gmail
->   labels / `search_gmail_raw`.
-> * v0.3 brings the identity model rework (breaking), Microsoft 365 OAuth,
->   and the optional Sieve / vacation extras.
+> **Release snapshot (2026-04-27)**
+> * v0.2.0–0.2.5 shipped the interactive wizard, 5-tier autoconfig
+>   waterfall, full draft toolkit (`reply_draft`, `forward_draft`,
+>   `update_draft`, `send_draft`), folder operations, `get_thread` /
+>   `get_special_folders` / `get_quota` / `list_accounts` /
+>   `get_account_info`, and a 37-test GreenMail integration suite.
+>   See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
+> * v0.3.0 shipped Microsoft 365 OAuth2 (browser sign-in via MSAL,
+>   refresh tokens in keyring, `mail-mcp[oauth-microsoft]` extra).
+> * v0.3.1 published a concise `instructions` block on the MCP
+>   handshake so LLMs no longer hallucinate "mail-mcp cannot download
+>   attachments".
+> * v0.3.2 was a security release — bearer/Authorization redaction in
+>   error messages, `defusedxml` for autoconfig XML parsing
+>   (billion-laughs / XXE defence), revoked-refresh-token cleanup,
+>   removal of the costly `preview_base64` field on
+>   `download_attachment`.
+> * v0.3.3 fixed Outlook "Forward as attachment" returning empty
+>   bodies — `message/rfc822` parts are now unfolded into the body
+>   under a `--- Forwarded message ---` divider and exposed as a
+>   virtual attachment downloadable as `.eml`. New escape-hatch tool
+>   `get_email_raw`.
+> * v0.3.4 fixed single-part `text/html` messages (Outlook 365
+>   "Forward inline") returning empty bodies; HTML is now rendered to
+>   a plain-text fallback via stdlib `html.parser`.
+> * v0.3.5 fixed two attachment bugs: `save_draft` shrinking `.eml`
+>   files to 44-byte placeholders and `update_draft(cc=...)` silently
+>   dropping every attachment.
+> * v0.3.6 added `AttachmentSpec.raw_passthrough` for byte-identical
+>   attachment delivery (chain-of-custody, eIDAS evidence sealing).
+> * v0.4 (next) — TBD. Candidate themes: Gmail labels / Gmail-flavoured
+>   search, Sieve / vacation autoresponder, multi-account
+>   workflow ergonomics on top of the existing per-call `account=`
+>   parameter.
 
 ## One-line summary per angle
 

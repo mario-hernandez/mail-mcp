@@ -25,7 +25,7 @@ I wanted my Claude Code (and Codex) sessions to understand my inbox: find the la
 - 🛡️ **TLS is mandatory.** IMAP uses implicit TLS (port 993). SMTP uses STARTTLS (587) or SMTPS (465). There is no knob to disable certificate verification.
 - 🧱 **Prompt-injection hardened.** Email bodies are wrapped in an `<untrusted_email_content>` envelope with an explicit warning; closing-tag breakouts and zero-width injection characters are neutralised before the model sees them.
 - 🚪 **Write access is gated by default.** Destructive tools are *not even registered* unless you opt in via environment variables. `send_email` additionally requires a second flag and an explicit `confirm=true`.
-- 🪶 **Small, auditable, five direct dependencies.** `mcp`, `imapclient`, `keyring`, `pydantic`, `certifi`. No web UI, no telemetry, no update checks, no relays, no phone-home.
+- 🪶 **Small, auditable, six direct dependencies.** `mcp`, `imapclient`, `keyring`, `pydantic`, `certifi`, `defusedxml`. No web UI, no telemetry, no update checks, no relays, no phone-home.
 - 🧰 **Clean tool surface** — structured IMAP search (no concatenation), bounded outputs, path-traversal-safe attachment saves.
 
 ## Architecture
@@ -49,7 +49,8 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `get_email` | ✅ | default | Fetch a message, body wrapped in XPIA envelope |
 | `get_thread` | ✅ | default | Conversation reconstruction via `THREAD=REFERENCES` |
 | `list_attachments` | ✅ | default | Attachment metadata for a message |
-| `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/` |
+| `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/`. Forwarded `message/rfc822` parts download as `.eml`. |
+| `get_email_raw` | ✅ | default | Escape hatch: full RFC822 source of one message (also saved to disk as `.eml`). Use when `get_email` body is empty or `list_attachments` is missing parts visible in the user's mail client. |
 | `list_drafts` | ✅ | default | List the account's Drafts mailbox without guessing its name |
 | `save_draft` | ✍️ | default | Build a MIME draft (supports disk-path attachments) |
 | `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject |
@@ -87,6 +88,23 @@ recipes that reliably confuse LLMs otherwise:
   Localised folder names (Borradores, Papelera, Elementos eliminados, …)
   are auto-detected at setup and live on the account record, so tools
   pick them up transparently.
+- **Forwarded messages.** Outlook / Exchange "Forward as attachment"
+  embeds the original as a `message/rfc822` part. `get_email` unfolds
+  the inner body into the outer body under a `--- Forwarded message ---`
+  divider; the rfc822 part is also exposed as a virtual attachment that
+  `download_attachment` writes to disk as `.eml`.
+- **HTML-only emails.** When a message has no `text/plain` alternative
+  (single-part `text/html`, common from Outlook 365 "Forward inline"),
+  `get_email` renders the HTML to a plain-text approximation so the
+  body field is never silently empty.
+- **Forensic attachments (chain-of-custody).** Pass
+  `raw_passthrough: true` in an `AttachmentSpec` to send a file's bytes
+  byte-for-byte. SHA-256 is preserved end-to-end at the cost of forcing
+  `application/octet-stream` (the recipient saves the file and verifies
+  the hash; useful for evidence preservation, eIDAS sealing).
+- **When the body still looks wrong.** `get_email_raw` returns the
+  full RFC822 source (capped, untrusted-wrapped, also saved to disk).
+  Use it as the escape hatch for unusual MIME structures.
 
 ## Install
 
@@ -227,7 +245,7 @@ Extensive threat model in [SECURITY.md](SECURITY.md) and [docs/THREAT_MODEL.md](
 - Destructive tools require explicit opt-in flags *and* argument confirmation.
 - Five direct dependencies, reproducible builds, no postinstall hooks.
 
-To report a vulnerability: email `m@mariohernandez.es` with the subject prefix `[mail-mcp]`. Please do not open a public GitHub issue for security reports.
+To report a vulnerability: email `developer@supera.dev` with the subject prefix `[mail-mcp]`. Please do not open a public GitHub issue for security reports.
 
 ## Development
 
@@ -236,14 +254,13 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 107 tests covering the safety boundaries
+pytest         # 149 tests covering the safety boundaries
 ruff check src tests
 ```
 
 ## Non-goals
 
 - OAuth2 for Gmail in-tree (use BYO Cloud project or `email-oauth2-proxy`). Microsoft 365 OAuth is **supported** since v0.3 — see [`docs/OAUTH_MICROSOFT.md`](docs/OAUTH_MICROSOFT.md).
-- Multiple-account switching at tool-call time (single default account in v0.2.x).
 - HTTP/SSE transport.
 - Web UI.
 - Calendar integration.
