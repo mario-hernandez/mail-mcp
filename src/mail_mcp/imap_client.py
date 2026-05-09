@@ -733,6 +733,48 @@ def set_flags(
     return len(uids)
 
 
+class UIDPlusRequired(RuntimeError):
+    """Raised when an operation needs RFC 4315 UIDPLUS but the server lacks it.
+
+    Carries a stable ``code`` so callers (and the MCP error classifier) can
+    branch on it programmatically. The ``mark_deleted`` fallback is the
+    safe alternative for caller-side mutations like ``update_draft`` /
+    ``send_draft`` that only intend to remove a single UID they just
+    created — leaving a ``\\Deleted``-flagged duplicate is preferable to
+    expunging unrelated messages another client has already flagged.
+    """
+
+    code = "UIDPLUS_REQUIRED_FOR_SAFE_EXPUNGE"
+
+
+def _has_uidplus(client: IMAPClient) -> bool:
+    """True when the server advertises RFC 4315 UIDPLUS in its capabilities."""
+    try:
+        caps = client.capabilities()
+    except Exception:  # noqa: BLE001 — be conservative on capability probes
+        return False
+    return b"UIDPLUS" in caps
+
+
+def safe_uid_expunge(client: IMAPClient, *, uids: list[int]) -> None:
+    """Expunge exactly the supplied UIDs from the currently-selected mailbox.
+
+    Bare ``EXPUNGE`` removes every message already flagged ``\\Deleted`` in
+    the selected mailbox — including messages another client (Outlook,
+    a phone app, a previous failed run) flagged earlier. RFC 4315
+    ``UID EXPUNGE`` (UIDPLUS) is the only way to expunge a specific set
+    safely. We refuse to fall back to bare ``EXPUNGE`` because that would
+    silently reintroduce the very bug this helper exists to prevent.
+    """
+    if not _has_uidplus(client):
+        raise UIDPlusRequired(
+            "server does not advertise UIDPLUS, so EXPUNGE cannot be "
+            "scoped to specific UIDs without risking unrelated messages "
+            "another client has already flagged \\Deleted."
+        )
+    client.uid_expunge(uids)
+
+
 def delete_uids(
     client: IMAPClient,
     *,
@@ -745,6 +787,14 @@ def delete_uids(
 
     Permanent deletion is irreversible and is gated by the caller both via the
     ``permanent`` flag and by the ``MAIL_MCP_ALLOW_PERMANENT_DELETE`` env var.
+
+    The expunge step uses :func:`safe_uid_expunge`, which requires the
+    server to advertise RFC 4315 UIDPLUS. Without UIDPLUS the previous
+    bare ``EXPUNGE`` would have removed every other message the user (or
+    another mail client) had marked ``\\Deleted`` in the same folder.
+    Failing closed is the right default: callers that only want to
+    remove a single UID they just created can catch
+    :class:`UIDPlusRequired` and fall back to mark-deleted-without-expunge.
     """
     validate_mailbox_name(mailbox)
     validate_mailbox_name(trash_mailbox)
@@ -755,7 +805,7 @@ def delete_uids(
     if permanent:
         client.select_folder(mailbox, readonly=False)
         client.add_flags(uids, [b"\\Deleted"])
-        client.expunge()
+        safe_uid_expunge(client, uids=uids)
         return len(uids)
     return move_uids(client, source=mailbox, destination=trash_mailbox, uids=uids)
 

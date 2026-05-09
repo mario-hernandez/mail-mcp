@@ -152,20 +152,53 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         new_drafts_mailbox, new_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
         )
-        imap_client.delete_uids(
-            c,
-            mailbox=mailbox,
-            uids=[params.uid],
-            trash_mailbox=acct.trash_mailbox,
-            permanent=True,
+        warning = _delete_old_draft_uid_safely(
+            c, mailbox=mailbox, uid=params.uid, trash_mailbox=acct.trash_mailbox,
         )
-    return {
+    response = {
         "account": acct.alias,
         "mailbox": new_drafts_mailbox,
         "old_uid": params.uid,
         "new_uid": int(new_uid),
         "message_id": msg["Message-ID"],
     }
+    if warning:
+        response["warning"] = warning
+    return response
+
+
+def _delete_old_draft_uid_safely(
+    client, *, mailbox: str, uid: int, trash_mailbox: str,
+) -> str | None:
+    """Delete the previous draft UID, falling back to mark-deleted on no-UIDPLUS.
+
+    ``update_draft`` and ``send_draft`` both APPEND a new copy and then
+    have to remove the old UID. Bare ``EXPUNGE`` would risk wiping
+    unrelated ``\\Deleted``-flagged messages in the same folder, and the
+    safe ``UID EXPUNGE`` requires RFC 4315 UIDPLUS. When the server does
+    not advertise UIDPLUS we fall back to flagging the old UID
+    ``\\Deleted`` without expunging — the user sees a duplicate the next
+    time their mail client re-syncs, which is recoverable; expunging
+    other people's messages is not.
+    """
+    try:
+        imap_client.delete_uids(
+            client,
+            mailbox=mailbox,
+            uids=[uid],
+            trash_mailbox=trash_mailbox,
+            permanent=True,
+        )
+        return None
+    except imap_client.UIDPlusRequired:
+        client.select_folder(mailbox, readonly=False)
+        client.add_flags([uid], [b"\\Deleted"])
+        return (
+            f"server does not advertise UIDPLUS; the previous draft "
+            f"(uid={uid}) has been flagged \\Deleted but not expunged "
+            "to avoid removing unrelated messages another client may "
+            "have flagged. Your mail client will hide it on next sync."
+        )
 
 
 def send_draft(cfg: Config, params: SendDraftInput) -> dict:
@@ -201,19 +234,18 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
             if hdr in msg:
                 del msg[hdr]
         message_id = smtp_client.send(acct, creds, msg)
-        imap_client.delete_uids(
-            c,
-            mailbox=mailbox,
-            uids=[params.uid],
-            trash_mailbox=acct.trash_mailbox,
-            permanent=True,
+        warning = _delete_old_draft_uid_safely(
+            c, mailbox=mailbox, uid=params.uid, trash_mailbox=acct.trash_mailbox,
         )
-    return {
+    response: dict = {
         "account": acct.alias,
         "message_id": message_id,
         "draft_uid": params.uid,
         "status": "sent",
     }
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
