@@ -160,6 +160,50 @@ def test_resolve_prefers_special_use_over_residual_plain_drafts_folder():
     assert imap_client.resolve_drafts_mailbox(client, acct) == "Borradores"
 
 
+def test_list_drafts_tool_searches_resolved_mailbox():
+    """``list_drafts`` must query the same mailbox where ``save_draft`` lands.
+
+    Pin Codex's gap: until v0.3.8 ``list_drafts`` searched
+    ``acct.drafts_mailbox`` directly. On a stale-config localised
+    account that means ``save_draft`` correctly creates a draft in
+    ``Borradores`` but ``list_drafts`` searches ``"Drafts"`` and
+    reports zero results — invisible drafts.
+    """
+    from contextlib import contextmanager
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+
+    from mail_mcp.config import Config, ConfigModel
+    from mail_mcp.credentials import AuthCredential
+    from mail_mcp.tools.read import list_drafts as list_drafts_tool
+    from mail_mcp.tools.schemas import ListDraftsInput
+
+    cfg = Config(path=Path("/tmp/x"), model=ConfigModel(accounts=[_account("Drafts")]))
+    captured: dict = {}
+
+    @contextmanager
+    def fake_connect(account, creds):
+        client = MagicMock()
+        client.list_folders.return_value = [
+            ([b"\\HasNoChildren"], "/", "INBOX"),
+            ([b"\\HasNoChildren", b"\\Drafts"], "/", "Borradores"),
+        ]
+        yield client
+
+    def fake_search(c, *, mailbox, limit, offset):
+        captured["mailbox"] = mailbox
+        return 0, []
+
+    with patch.object(imap_client, "connect", fake_connect), \
+         patch.object(imap_client, "search", fake_search), \
+         patch("mail_mcp.tools.read.resolve_auth",
+               lambda a: AuthCredential(kind="password", username=a.email, secret="x")):
+        result = list_drafts_tool(cfg, ListDraftsInput(account="t"))
+
+    assert captured["mailbox"] == "Borradores"
+    assert result["mailbox"] == "Borradores"
+
+
 def test_save_draft_tool_response_reports_resolved_mailbox_not_config():
     """Pin Codex finding #1: ``save_draft`` tool must return the real mailbox
     (the one APPEND landed in), not the stale ``account.drafts_mailbox``.

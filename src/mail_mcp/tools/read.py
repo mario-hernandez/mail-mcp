@@ -215,17 +215,28 @@ def get_quota(cfg: Config, params: GetQuotaInput) -> dict:
 
 
 def list_drafts(cfg: Config, params: ListDraftsInput) -> dict:
+    """List messages from the account's drafts mailbox.
+
+    The mailbox is resolved at call time via
+    :func:`imap_client.resolve_drafts_mailbox` (SPECIAL-USE first, then
+    configured value, then localised fallbacks). This keeps
+    ``list_drafts`` consistent with ``save_draft`` / ``update_draft`` —
+    a draft created in ``Borradores`` shows up in this listing even
+    when the account config still carries the literal default
+    ``"Drafts"``.
+    """
     acct, creds = _resolve(cfg, params.account)
     with imap_client.connect(acct, creds) as c:
+        drafts_mailbox = imap_client.resolve_drafts_mailbox(c, acct)
         total, headers = imap_client.search(
             c,
-            mailbox=acct.drafts_mailbox,
+            mailbox=drafts_mailbox,
             limit=params.limit,
             offset=params.offset,
         )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "total": total,
         "offset": params.offset,
         "returned": len(headers),
