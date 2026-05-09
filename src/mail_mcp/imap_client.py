@@ -176,10 +176,11 @@ def detect_special_mailboxes(client: IMAPClient) -> dict[str, str]:
     return found
 
 
-# Localised drafts mailbox names — RFC 6154 SPECIAL-USE is the canonical
-# signal, this list is the last-resort fallback for servers that don't
-# advertise it. Order matters: check the configured / detected name first,
-# then English, then the localisations Outlook / Exchange / IONOS use.
+# Localised system-mailbox names — RFC 6154 SPECIAL-USE is the canonical
+# signal, these lists are the last-resort fallbacks for servers that do
+# not advertise it. Order matters: check English first (covers Gmail /
+# Fastmail / iCloud / generic Cyrus), then the localisations Outlook /
+# Exchange / IONOS / GMX use.
 _LOCALISED_DRAFTS_FALLBACKS = (
     "Drafts",
     "Borradores",       # Spanish — Outlook 365 ES, IONOS ES
@@ -199,6 +200,88 @@ _LOCALISED_DRAFTS_FALLBACKS = (
     "INBOX.Entwürfe",
 )
 
+_LOCALISED_TRASH_FALLBACKS = (
+    "Trash",
+    "Deleted Items",                # Exchange / Outlook English
+    "Papelera",                     # Spanish (IONOS, generic)
+    "Elementos eliminados",         # Outlook 365 ES
+    "Corbeille",                    # French generic
+    "Éléments supprimés",           # Outlook 365 FR
+    "Papierkorb",                   # German (GMX, Web.de)
+    "Gelöschte Elemente",           # Outlook 365 DE
+    "Cestino",                      # Italian
+    "Posta eliminata",              # Outlook 365 IT
+    "Lixo",                         # Portuguese (PT)
+    "Lixeira",                      # Portuguese (BR)
+    "Itens Excluídos",              # Outlook 365 PT-BR
+    "Prullenbak",                   # Dutch
+    "Verwijderde items",            # Outlook 365 NL
+    "Papperskorgen",                # Swedish
+    "Søppel",                       # Norwegian
+    "Корзина",                      # Russian
+    "Удалённые",                    # Outlook 365 RU
+    "ゴミ箱",                        # Japanese
+    "回收站",                        # Chinese (CN)
+    "已删除邮件",                     # Outlook 365 CN
+    "[Gmail]/Trash",
+    "INBOX.Trash",
+    "INBOX.Papelera",
+    "INBOX.Corbeille",
+    "INBOX.Papierkorb",
+)
+
+
+def _resolve_special_mailbox(
+    client: IMAPClient,
+    *,
+    hint: str | None,
+    configured: str,
+    special_use_flag: str,
+    fallbacks: tuple[str, ...],
+    label: str,
+) -> str:
+    """Internal resolver shared by drafts and trash lookups.
+
+    The single ``LIST *`` issued for SPECIAL-USE detection is reused for
+    all existence checks, so the helper costs one extra IMAP round-trip
+    in the worst case.
+
+    Resolution order:
+
+    1. ``hint`` if supplied and that folder exists on the server.
+    2. The folder advertised with the requested SPECIAL-USE flag — the
+       canonical RFC 6154 signal, and the one the user's mail client
+       treats as authoritative. This wins over a potentially-stale
+       configured name (a localised account can carry both a residual
+       English folder from migration AND a SPECIAL-USE-flagged real
+       mailbox; picking the flagged one keeps the user's mail-client
+       view consistent).
+    3. ``configured`` if it exists on the server.
+    4. The first match from ``fallbacks``.
+    """
+    folders = {f.name: f for f in list_folders(client)}
+
+    def _exists(name: str) -> bool:
+        return name in folders
+
+    if hint and _exists(hint):
+        return hint
+    for f in folders.values():
+        if f.special_use == special_use_flag:
+            return f.name
+    if configured and _exists(configured):
+        return configured
+    for name in fallbacks:
+        if _exists(name):
+            return name
+    raise RuntimeError(
+        f"no {label} mailbox found on the server. Tried RFC 6154 "
+        f"SPECIAL-USE {special_use_flag}, the configured name "
+        f"{configured!r}, and the common localised fallbacks. Inspect "
+        "`mail-mcp doctor` and re-run `mail-mcp init` to refresh the "
+        "SPECIAL-USE detection, or pass an explicit `mailbox=` argument."
+    )
+
 
 def resolve_drafts_mailbox(
     client: IMAPClient,
@@ -215,53 +298,44 @@ def resolve_drafts_mailbox(
     ``"Drafts"`` in their config. APPEND then fails with ``[TRYCREATE]
     folder does not exist`` on any non-English mailbox.
 
-    Resolution order:
-
-    1. ``hint`` if supplied and that folder exists on the server — lets
-       the caller force a specific mailbox they got from
-       ``list_folders`` / ``get_special_folders``.
-    2. The folder advertised with the RFC 6154 ``\\Drafts`` SPECIAL-USE
-       flag — the canonical signal, and the one the user's mail client
-       treats as drafts. This wins over a potentially-stale
-       ``account.drafts_mailbox`` config value: a localised account
-       can carry both a residual plain ``Drafts`` folder (migration
-       leftover, another client) AND the real ``Borradores`` /
-       ``Brouillons`` / ``Entwürfe`` mailbox flagged ``\\Drafts``;
-       picking the SPECIAL-USE one keeps drafts visible where the user
-       expects them.
-    3. ``account.drafts_mailbox`` if it exists on the server (no
-       SPECIAL-USE conflict).
-    4. The first match from a small list of localised names commonly
-       used by Outlook / Exchange / IONOS / GMX / Cyrus / Gmail when
-       the server does not advertise SPECIAL-USE at all.
-
-    The single ``LIST *`` issued for SPECIAL-USE detection is reused for
-    all existence checks, so the helper costs one extra IMAP round-trip
-    in the worst case.
+    See :func:`_resolve_special_mailbox` for the resolution order
+    (hint → SPECIAL-USE \\Drafts → configured name → localised fallback).
     """
-    folders = {f.name: f for f in list_folders(client)}
+    return _resolve_special_mailbox(
+        client,
+        hint=hint,
+        configured=(account.drafts_mailbox or "").strip(),
+        special_use_flag="\\Drafts",
+        fallbacks=_LOCALISED_DRAFTS_FALLBACKS,
+        label="drafts",
+    )
 
-    def _exists(name: str) -> bool:
-        return name in folders
 
-    if hint and _exists(hint):
-        return hint
-    for f in folders.values():
-        if f.special_use == "\\Drafts":
-            return f.name
-    configured = (account.drafts_mailbox or "").strip()
-    if configured and _exists(configured):
-        return configured
-    for name in _LOCALISED_DRAFTS_FALLBACKS:
-        if _exists(name):
-            return name
-    raise RuntimeError(
-        "no drafts mailbox found on the server. Tried RFC 6154 "
-        f"SPECIAL-USE \\Drafts, the configured name {configured!r}, "
-        "and the common localised fallbacks. Inspect `mail-mcp doctor` "
-        "and re-run `mail-mcp init` to refresh the SPECIAL-USE "
-        "detection, or pass an explicit `mailbox=` argument naming the "
-        "mailbox your client uses for drafts."
+def resolve_trash_mailbox(
+    client: IMAPClient,
+    account: AccountModel,
+    *,
+    hint: str | None = None,
+) -> str:
+    """Return the actual trash mailbox name on the server.
+
+    Mirrors :func:`resolve_drafts_mailbox` for the ``\\Trash`` SPECIAL-USE
+    flag. Localised Outlook / Exchange accounts use names like
+    ``Papelera`` (ES), ``Elementos eliminados`` (Outlook ES),
+    ``Corbeille`` (FR), ``Éléments supprimés`` (Outlook FR), or
+    ``Papierkorb`` (DE) — which a stale account config of ``"Trash"``
+    will not match. Without resolution, ``delete_emails(permanent=false)``
+    silently moves messages into a literal ``Trash`` folder the server
+    will sometimes auto-create on first use, separate from the mailbox
+    the user's mail client treats as their trash.
+    """
+    return _resolve_special_mailbox(
+        client,
+        hint=hint,
+        configured=(account.trash_mailbox or "").strip(),
+        special_use_flag="\\Trash",
+        fallbacks=_LOCALISED_TRASH_FALLBACKS,
+        label="trash",
     )
 
 

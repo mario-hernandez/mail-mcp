@@ -133,15 +133,30 @@ def delete_email(cfg: Config, params: DeleteEmailInput) -> dict:
                 "Permanent delete requires the caller to pass confirm=true."
             )
     with imap_client.connect(acct, creds) as c:
+        # For trash-mode delete, resolve the actual trash mailbox at call
+        # time. ``acct.trash_mailbox`` is just a hint; servers in Spanish /
+        # French / German use ``Papelera`` / ``Corbeille`` / ``Papierkorb``
+        # (or Outlook 365's ``Elementos eliminados`` / ``Éléments
+        # supprimés`` / ``Gelöschte Elemente``) and a stale literal
+        # ``"Trash"`` would either fail or land messages in a folder the
+        # user's mail client does not treat as their trash. Permanent
+        # delete does not consult Trash so we skip resolution there.
+        if params.permanent:
+            trash = acct.trash_mailbox  # not used; kept for delete_uids signature
+        else:
+            trash = imap_client.resolve_trash_mailbox(c, acct)
         affected = imap_client.delete_uids(
             c,
             mailbox=params.mailbox,
             uids=params.uids,
-            trash_mailbox=acct.trash_mailbox,
+            trash_mailbox=trash,
             permanent=params.permanent,
         )
-    return {
+    response = {
         "account": acct.alias,
         "affected": affected,
         "mode": "permanent" if params.permanent else "trash",
     }
+    if not params.permanent:
+        response["trash_mailbox"] = trash
+    return response
