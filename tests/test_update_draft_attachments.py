@@ -82,7 +82,8 @@ def _run_update_draft(params: UpdateDraftInput, original_wire: bytes) -> bytes:
 
     def fake_save_draft(c, *, account, message_bytes):
         captured["wire"] = message_bytes
-        return 999
+        # imap_client.save_draft now returns (mailbox, uid).
+        return "Drafts", 999
 
     def fake_delete(c, **kw):
         return 1

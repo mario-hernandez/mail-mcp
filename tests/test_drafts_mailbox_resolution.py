@@ -117,17 +117,90 @@ def test_resolve_recognises_gmail_style_drafts_folder():
     assert imap_client.resolve_drafts_mailbox(client, acct) == "[Gmail]/Drafts"
 
 
-def test_save_draft_uses_resolved_mailbox_for_append():
-    """End-to-end: ``save_draft`` calls APPEND against the resolved name, not the literal config."""
+def test_save_draft_uses_resolved_mailbox_for_append_and_returns_it():
+    """End-to-end: ``save_draft`` calls APPEND against the resolved name AND
+    returns the actual mailbox so callers can surface it to the LLM.
+
+    Pins the v0.3.7 contract change: ``imap_client.save_draft`` returns
+    ``(mailbox, uid)`` instead of just ``uid``. Tool-layer handlers
+    (``save_draft``, ``reply_draft``, ``forward_draft``, ``update_draft``)
+    must surface this mailbox in their response so a follow-up
+    ``update_draft(mailbox=..., uid=...)`` from the LLM uses the real
+    folder, not the stale config value.
+    """
     client = _fake_client_with_folders(
         ([b"\\HasNoChildren"], "/", "INBOX"),
         ([b"\\HasNoChildren", b"\\Drafts"], "/", "Borradores"),
     )
     client.append.return_value = b"[APPENDUID 1 42] APPEND completed."
     acct = _account(drafts="Drafts")
-    uid = imap_client.save_draft(client, account=acct, message_bytes=b"Subject: t\r\n\r\nbody")
+    mailbox, uid = imap_client.save_draft(
+        client, account=acct, message_bytes=b"Subject: t\r\n\r\nbody",
+    )
+    assert mailbox == "Borradores"
     assert uid == 42
     # The APPEND must have been issued against ``Borradores``, NOT ``Drafts``.
     append_calls = client.append.call_args_list
     assert len(append_calls) == 1
     assert append_calls[0].args[0] == "Borradores"
+
+
+def test_resolve_prefers_special_use_over_residual_plain_drafts_folder():
+    """Pin Codex finding #2: server has BOTH a plain ``Drafts`` (no flag) and a
+    SPECIAL-USE ``Borradores`` — must pick the SPECIAL-USE one even when the
+    config still says the literal ``Drafts`` (otherwise the draft lands in the
+    residual folder and never appears in the user's drafts view).
+    """
+    client = _fake_client_with_folders(
+        ([b"\\HasNoChildren"], "/", "INBOX"),
+        ([b"\\HasNoChildren"], "/", "Drafts"),  # residual / migration leftover
+        ([b"\\HasNoChildren", b"\\Drafts"], "/", "Borradores"),  # the real one
+    )
+    acct = _account(drafts="Drafts")
+    assert imap_client.resolve_drafts_mailbox(client, acct) == "Borradores"
+
+
+def test_save_draft_tool_response_reports_resolved_mailbox_not_config():
+    """Pin Codex finding #1: ``save_draft`` tool must return the real mailbox
+    (the one APPEND landed in), not the stale ``account.drafts_mailbox``.
+
+    Without this, an LLM that takes ``response.mailbox`` and feeds it back to
+    ``update_draft(mailbox=..., uid=...)`` falls into a TRYCREATE trap on
+    localised servers — the very bug v0.3.7 was supposed to fix.
+    """
+    from contextlib import contextmanager
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+
+    from mail_mcp.config import Config, ConfigModel
+    from mail_mcp.credentials import AuthCredential
+    from mail_mcp.tools.drafts import save_draft as save_draft_tool
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    cfg = Config(path=Path("/tmp/x"), model=ConfigModel(accounts=[_account("Drafts")]))
+
+    @contextmanager
+    def fake_connect(account, creds):
+        client = MagicMock()
+        client.list_folders.return_value = [
+            ([b"\\HasNoChildren"], "/", "INBOX"),
+            ([b"\\HasNoChildren", b"\\Drafts"], "/", "Borradores"),
+        ]
+        client.append.return_value = b"[APPENDUID 1 27736] APPEND completed."
+        yield client
+
+    with patch.object(imap_client, "connect", fake_connect), \
+         patch("mail_mcp.tools.drafts.resolve_auth",
+               lambda a: AuthCredential(kind="password", username=a.email, secret="x")):
+        result = save_draft_tool(
+            cfg,
+            SaveDraftInput(
+                account="t", to=["recipient@example.com"], subject="Hi", body="body",
+            ),
+        )
+
+    assert result["mailbox"] == "Borradores", (
+        f"save_draft response must report the real mailbox where APPEND "
+        f"landed, not the stale config value. Got: {result['mailbox']!r}"
+    )
+    assert result["uid"] == 27736

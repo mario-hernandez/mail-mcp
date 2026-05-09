@@ -220,11 +220,20 @@ def resolve_drafts_mailbox(
     1. ``hint`` if supplied and that folder exists on the server — lets
        the caller force a specific mailbox they got from
        ``list_folders`` / ``get_special_folders``.
-    2. ``account.drafts_mailbox`` if it exists on the server.
-    3. The folder advertised with the RFC 6154 ``\\Drafts`` SPECIAL-USE
-       flag (the canonical signal).
+    2. The folder advertised with the RFC 6154 ``\\Drafts`` SPECIAL-USE
+       flag — the canonical signal, and the one the user's mail client
+       treats as drafts. This wins over a potentially-stale
+       ``account.drafts_mailbox`` config value: a localised account
+       can carry both a residual plain ``Drafts`` folder (migration
+       leftover, another client) AND the real ``Borradores`` /
+       ``Brouillons`` / ``Entwürfe`` mailbox flagged ``\\Drafts``;
+       picking the SPECIAL-USE one keeps drafts visible where the user
+       expects them.
+    3. ``account.drafts_mailbox`` if it exists on the server (no
+       SPECIAL-USE conflict).
     4. The first match from a small list of localised names commonly
-       used by Outlook / Exchange / IONOS / GMX / Cyrus / Gmail.
+       used by Outlook / Exchange / IONOS / GMX / Cyrus / Gmail when
+       the server does not advertise SPECIAL-USE at all.
 
     The single ``LIST *`` issued for SPECIAL-USE detection is reused for
     all existence checks, so the helper costs one extra IMAP round-trip
@@ -237,22 +246,22 @@ def resolve_drafts_mailbox(
 
     if hint and _exists(hint):
         return hint
-    configured = (account.drafts_mailbox or "").strip()
-    if configured and _exists(configured):
-        return configured
     for f in folders.values():
         if f.special_use == "\\Drafts":
             return f.name
+    configured = (account.drafts_mailbox or "").strip()
+    if configured and _exists(configured):
+        return configured
     for name in _LOCALISED_DRAFTS_FALLBACKS:
         if _exists(name):
             return name
     raise RuntimeError(
-        "no drafts mailbox found on the server. Tried the configured "
-        f"name {configured!r}, RFC 6154 SPECIAL-USE \\Drafts, and the "
-        "common localised fallbacks. Inspect `mail-mcp doctor` and "
-        "re-run `mail-mcp init` to refresh the SPECIAL-USE detection, "
-        "or pass an explicit `mailbox=` argument naming the mailbox "
-        "your client uses for drafts."
+        "no drafts mailbox found on the server. Tried RFC 6154 "
+        f"SPECIAL-USE \\Drafts, the configured name {configured!r}, "
+        "and the common localised fallbacks. Inspect `mail-mcp doctor` "
+        "and re-run `mail-mcp init` to refresh the SPECIAL-USE "
+        "detection, or pass an explicit `mailbox=` argument naming the "
+        "mailbox your client uses for drafts."
     )
 
 
@@ -489,19 +498,29 @@ def download_attachment(
 _APPENDUID_RE = re.compile(rb"APPENDUID\s+\d+\s+(\d+)")
 
 
-def save_draft(client: IMAPClient, *, account: AccountModel, message_bytes: bytes) -> int:
+def save_draft(
+    client: IMAPClient, *, account: AccountModel, message_bytes: bytes,
+) -> tuple[str, int]:
     """Append a pre-built MIME message to the drafts mailbox.
 
-    Returns the new UID. Servers that advertise UIDPLUS (RFC 4315) reply
-    with ``[APPENDUID <uidvalidity> <uid>] APPEND completed.``; ``imapclient``
-    forwards the raw response bytes, so we extract the trailing UID token.
-    Fallback for non-UIDPLUS servers: interpret the response as a bare
-    integer, or return 0 when neither shape is recognised.
+    Returns ``(mailbox, uid)`` where ``mailbox`` is the actual server
+    folder used — not necessarily ``account.drafts_mailbox``, which can
+    be a stale default like ``"Drafts"`` when the real mailbox is
+    ``Borradores`` / ``Brouillons`` / ``Entwürfe``. Surfacing the
+    resolved name lets callers report it in their tool result so
+    downstream ``update_draft`` / ``send_draft`` / ``get_email`` calls
+    target the right folder.
+
+    Servers that advertise UIDPLUS (RFC 4315) reply with
+    ``[APPENDUID <uidvalidity> <uid>] APPEND completed.``; ``imapclient``
+    forwards the raw response bytes, so we extract the trailing UID
+    token. Fallback for non-UIDPLUS servers: interpret the response as
+    a bare integer, or return UID 0 when neither shape is recognised.
 
     The drafts mailbox is resolved at runtime via
-    :func:`resolve_drafts_mailbox` (SPECIAL-USE first, then localised
-    name fallback), so accounts whose stored ``drafts_mailbox`` is the
-    literal default ``"Drafts"`` still APPEND correctly on servers
+    :func:`resolve_drafts_mailbox` (SPECIAL-USE first, configured name,
+    localised fallback), so accounts whose stored ``drafts_mailbox`` is
+    the literal default ``"Drafts"`` still APPEND correctly on servers
     where the real mailbox is named ``Borradores`` / ``Brouillons`` /
     ``Entwürfe`` / etc.
     """
@@ -509,15 +528,15 @@ def save_draft(client: IMAPClient, *, account: AccountModel, message_bytes: byte
     validate_mailbox_name(drafts_mailbox)
     raw = client.append(drafts_mailbox, message_bytes, flags=[b"\\Draft"])
     if isinstance(raw, int):
-        return raw
+        return drafts_mailbox, raw
     data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
     m = _APPENDUID_RE.search(bytes(data))
     if m:
-        return int(m.group(1))
+        return drafts_mailbox, int(m.group(1))
     try:
-        return int(bytes(data).strip())
+        return drafts_mailbox, int(bytes(data).strip())
     except (TypeError, ValueError):
-        return 0
+        return drafts_mailbox, 0
 
 
 def copy_uids(

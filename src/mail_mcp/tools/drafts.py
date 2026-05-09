@@ -40,10 +40,12 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
     # will re-enter BCC at send time. Drafts with BCC headers break some
     # providers' threading.
     with imap_client.connect(acct, creds) as c:
-        draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        drafts_mailbox, draft_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
     }
@@ -65,10 +67,12 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
             reply_all=params.reply_all,
             include_original_quote=params.include_original_quote,
         )
-        draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        drafts_mailbox, draft_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
         "in_reply_to": msg.get("In-Reply-To"),
@@ -145,7 +149,9 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         if params.preserve_message_id and original.get("Message-ID"):
             del msg["Message-ID"]
             msg["Message-ID"] = original["Message-ID"]
-        new_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        new_drafts_mailbox, new_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
         imap_client.delete_uids(
             c,
             mailbox=mailbox,
@@ -155,7 +161,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         )
     return {
         "account": acct.alias,
-        "mailbox": mailbox,
+        "mailbox": new_drafts_mailbox,
         "old_uid": params.uid,
         "new_uid": int(new_uid),
         "message_id": msg["Message-ID"],
@@ -226,10 +232,12 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
             cc=params.cc,
             bcc=params.bcc,
         )
-        draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        drafts_mailbox, draft_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
         "subject": msg.get("Subject"),
