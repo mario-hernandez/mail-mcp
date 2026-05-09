@@ -179,7 +179,17 @@ class ListDraftsInput(_AccountScoped):
 
 
 class UpdateDraftInput(_AccountScoped):
-    mailbox: str = Field(default="Drafts", max_length=255)
+    mailbox: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Mailbox holding the draft. Defaults to the account's "
+            "drafts mailbox auto-detected via SPECIAL-USE (so localised "
+            "names like ``Borradores`` / ``Brouillons`` / ``Entwürfe`` "
+            "work without explicit configuration). Pass an explicit "
+            "value to override."
+        ),
+    )
     uid: int = Field(ge=1)
     to: list[str] | None = None
     cc: list[str] | None = None
@@ -203,7 +213,14 @@ class UpdateDraftInput(_AccountScoped):
 
 
 class SendDraftInput(_AccountScoped):
-    mailbox: str = Field(default="Drafts", max_length=255)
+    mailbox: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Mailbox holding the draft. Defaults to the account's drafts "
+            "mailbox auto-detected via SPECIAL-USE."
+        ),
+    )
     uid: int = Field(ge=1)
     confirm: bool = Field(default=False, description="Must be true to actually send.")
 

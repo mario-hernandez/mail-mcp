@@ -91,6 +91,7 @@ def _run_update_draft(params: UpdateDraftInput, original_wire: bytes) -> bytes:
          patch.object(imap_client, "fetch_raw_message", fake_fetch_raw), \
          patch.object(imap_client, "save_draft", fake_save_draft), \
          patch.object(imap_client, "delete_uids", fake_delete), \
+         patch.object(imap_client, "resolve_drafts_mailbox", lambda c, a, **kw: "Drafts"), \
          patch("mail_mcp.tools.drafts.resolve_auth", lambda a: AuthCredential(
              kind="password", username=a.email, secret="x"
          )):

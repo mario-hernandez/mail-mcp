@@ -176,6 +176,86 @@ def detect_special_mailboxes(client: IMAPClient) -> dict[str, str]:
     return found
 
 
+# Localised drafts mailbox names — RFC 6154 SPECIAL-USE is the canonical
+# signal, this list is the last-resort fallback for servers that don't
+# advertise it. Order matters: check the configured / detected name first,
+# then English, then the localisations Outlook / Exchange / IONOS use.
+_LOCALISED_DRAFTS_FALLBACKS = (
+    "Drafts",
+    "Borradores",       # Spanish — Outlook 365 ES, IONOS ES
+    "Brouillons",       # French — Outlook 365 FR
+    "Entwürfe",         # German — Outlook 365 DE, GMX, Web.de
+    "Bozze",            # Italian
+    "Rascunhos",        # Portuguese
+    "Concepten",        # Dutch
+    "Utkast",           # Swedish / Norwegian
+    "Черновики",        # Russian
+    "下書き",            # Japanese
+    "草稿",              # Chinese
+    "[Gmail]/Drafts",   # Gmail folder-style
+    "INBOX.Drafts",     # Cyrus / Dovecot INBOX-prefixed
+    "INBOX.Borradores",
+    "INBOX.Brouillons",
+    "INBOX.Entwürfe",
+)
+
+
+def resolve_drafts_mailbox(
+    client: IMAPClient,
+    account: AccountModel,
+    *,
+    hint: str | None = None,
+) -> str:
+    """Return the actual drafts mailbox name on the server.
+
+    The wizard normally writes the SPECIAL-USE-discovered name to
+    ``account.drafts_mailbox`` at setup time, but accounts that predate
+    that detection logic — or servers that did not advertise SPECIAL-USE
+    during the initial probe — can end up with the literal default
+    ``"Drafts"`` in their config. APPEND then fails with ``[TRYCREATE]
+    folder does not exist`` on any non-English mailbox.
+
+    Resolution order:
+
+    1. ``hint`` if supplied and that folder exists on the server — lets
+       the caller force a specific mailbox they got from
+       ``list_folders`` / ``get_special_folders``.
+    2. ``account.drafts_mailbox`` if it exists on the server.
+    3. The folder advertised with the RFC 6154 ``\\Drafts`` SPECIAL-USE
+       flag (the canonical signal).
+    4. The first match from a small list of localised names commonly
+       used by Outlook / Exchange / IONOS / GMX / Cyrus / Gmail.
+
+    The single ``LIST *`` issued for SPECIAL-USE detection is reused for
+    all existence checks, so the helper costs one extra IMAP round-trip
+    in the worst case.
+    """
+    folders = {f.name: f for f in list_folders(client)}
+
+    def _exists(name: str) -> bool:
+        return name in folders
+
+    if hint and _exists(hint):
+        return hint
+    configured = (account.drafts_mailbox or "").strip()
+    if configured and _exists(configured):
+        return configured
+    for f in folders.values():
+        if f.special_use == "\\Drafts":
+            return f.name
+    for name in _LOCALISED_DRAFTS_FALLBACKS:
+        if _exists(name):
+            return name
+    raise RuntimeError(
+        "no drafts mailbox found on the server. Tried the configured "
+        f"name {configured!r}, RFC 6154 SPECIAL-USE \\Drafts, and the "
+        "common localised fallbacks. Inspect `mail-mcp doctor` and "
+        "re-run `mail-mcp init` to refresh the SPECIAL-USE detection, "
+        "or pass an explicit `mailbox=` argument naming the mailbox "
+        "your client uses for drafts."
+    )
+
+
 def _flag_to_str(flag: Any) -> str:
     if isinstance(flag, bytes):
         try:
@@ -417,9 +497,17 @@ def save_draft(client: IMAPClient, *, account: AccountModel, message_bytes: byte
     forwards the raw response bytes, so we extract the trailing UID token.
     Fallback for non-UIDPLUS servers: interpret the response as a bare
     integer, or return 0 when neither shape is recognised.
+
+    The drafts mailbox is resolved at runtime via
+    :func:`resolve_drafts_mailbox` (SPECIAL-USE first, then localised
+    name fallback), so accounts whose stored ``drafts_mailbox`` is the
+    literal default ``"Drafts"`` still APPEND correctly on servers
+    where the real mailbox is named ``Borradores`` / ``Brouillons`` /
+    ``Entwürfe`` / etc.
     """
-    validate_mailbox_name(account.drafts_mailbox)
-    raw = client.append(account.drafts_mailbox, message_bytes, flags=[b"\\Draft"])
+    drafts_mailbox = resolve_drafts_mailbox(client, account)
+    validate_mailbox_name(drafts_mailbox)
+    raw = client.append(drafts_mailbox, message_bytes, flags=[b"\\Draft"])
     if isinstance(raw, int):
         return raw
     data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()

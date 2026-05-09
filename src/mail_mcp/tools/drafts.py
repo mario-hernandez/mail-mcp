@@ -100,8 +100,9 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
     acct = cfg.account(params.account)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
+        mailbox = params.mailbox or imap_client.resolve_drafts_mailbox(c, acct)
         raw, headers = imap_client.fetch_raw_message(
-            c, mailbox=params.mailbox, uid=params.uid,
+            c, mailbox=mailbox, uid=params.uid,
         )
         original = _email.message_from_bytes(raw, policy=_policy.default)
         if params.to is not None:
@@ -147,14 +148,14 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         new_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
         imap_client.delete_uids(
             c,
-            mailbox=params.mailbox,
+            mailbox=mailbox,
             uids=[params.uid],
             trash_mailbox=acct.trash_mailbox,
             permanent=True,
         )
     return {
         "account": acct.alias,
-        "mailbox": params.mailbox,
+        "mailbox": mailbox,
         "old_uid": params.uid,
         "new_uid": int(new_uid),
         "message_id": msg["Message-ID"],
@@ -184,8 +185,9 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
+        mailbox = params.mailbox or imap_client.resolve_drafts_mailbox(c, acct)
         raw, _headers = imap_client.fetch_raw_message(
-            c, mailbox=params.mailbox, uid=params.uid,
+            c, mailbox=mailbox, uid=params.uid,
         )
         msg = _email.message_from_bytes(raw, policy=_policy.default)
         # Strip any X-* or transport headers the IMAP server added
@@ -195,7 +197,7 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
         message_id = smtp_client.send(acct, creds, msg)
         imap_client.delete_uids(
             c,
-            mailbox=params.mailbox,
+            mailbox=mailbox,
             uids=[params.uid],
             trash_mailbox=acct.trash_mailbox,
             permanent=True,
