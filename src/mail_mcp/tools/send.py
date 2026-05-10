@@ -29,7 +29,21 @@ from .schemas import SendEmailInput
 
 
 class SendDisabled(RuntimeError):
-    """Raised when send is invoked without the full gating chain engaged."""
+    """Raised when send is invoked without the full gating chain engaged.
+
+    The ``code`` attribute lets the server classifier distinguish the two
+    distinct shapes of "send blocked" so the LLM can tell the user the
+    right thing — env-var gate (one-time setup, requires user action and
+    a client restart) vs. missing ``confirm=true`` (a per-call argument
+    the LLM forgot to pass).
+    """
+
+    NOT_ENABLED = "SEND_NOT_ENABLED"
+    REQUIRES_CONFIRM = "SEND_REQUIRES_CONFIRM"
+
+    def __init__(self, message: str, *, code: str = NOT_ENABLED) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class RateLimited(RuntimeError):
@@ -80,11 +94,15 @@ def _reset_for_tests() -> None:
 def send_email(cfg: Config, params: SendEmailInput) -> dict:
     if not is_enabled():
         raise SendDisabled(
-            "send_email is disabled. Set MAIL_MCP_WRITE_ENABLED=true and "
-            "MAIL_MCP_SEND_ENABLED=true in the server environment to enable it."
+            "send_email is registered but disabled by env-var gate.",
+            code=SendDisabled.NOT_ENABLED,
         )
     if not params.confirm:
-        raise SendDisabled("send_email requires the caller to pass confirm=true.")
+        raise SendDisabled(
+            "send_email requires confirm=true on the call (per-tool safety, "
+            "not a configuration issue).",
+            code=SendDisabled.REQUIRES_CONFIRM,
+        )
     acct = cfg.account(params.account)
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)

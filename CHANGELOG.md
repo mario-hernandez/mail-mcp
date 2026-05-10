@@ -7,7 +7,38 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **`send_email` and `send_draft` are now registered unconditionally**,
+  even when `MAIL_MCP_WRITE_ENABLED` / `MAIL_MCP_SEND_ENABLED` are off.
+  Previously the tools were not registered at all under the off-state,
+  which led LLM agents to tell users "mail-mcp cannot send email" and
+  recommend other servers instead of explaining the env-var gate.
+
+  The security boundary is unchanged: the handlers still raise
+  `SendDisabled` at call time when the gate is off — nothing transmits
+  until the user opts in. What changes is *visibility*: the LLM now
+  sees the tools in the list, attempts to call them, and gets back
+  `error.code = "SEND_NOT_ENABLED"` with a step-by-step recipe (env
+  vars, config-file paths for Claude Code / Claude Desktop / Codex CLI,
+  restart instruction). The LLM can guide the user through enabling
+  send in one turn instead of declaring the capability missing.
+
+  Distinct error code `SEND_REQUIRES_CONFIRM` is now used when the
+  caller forgets `confirm=true`, so the LLM does not point the user at
+  config edits when the actual fix is a per-call argument.
+
+  The pre-existing pattern stands for **destructive write tools**
+  (`copy_email`, `move_email`, `mark_emails`, `delete_emails`, folder
+  CRUD): they remain not-even-registered when `MAIL_MCP_WRITE_ENABLED`
+  is unset. That trade-off was kept because they are higher-blast-radius
+  and rarely the right answer for a fresh install.
+
+  Server `instructions` block updated with an explicit anti-defeatism
+  paragraph: "If you call send_email or send_draft and the response is
+  SEND_NOT_ENABLED, do NOT tell the user 'mail-mcp cannot send'."
+
+  README and SECURITY.md updated to describe the visibility/gate split.
 
 ## [0.3.6] — 2026-04-27
 

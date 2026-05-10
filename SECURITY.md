@@ -37,8 +37,8 @@ HTTPS is non-negotiable — HTTP URLs are rejected. Every call is capped at thre
 - **Email headers are built with `email.message.EmailMessage`.** Subject/To/From/Cc are additionally validated against `\r\n` and control characters before construction, so an LLM cannot inject a `Bcc:` header by stuffing `\r\n` into a user-visible field.
 - **Destructive tools are gated.**
   - `save_draft` is the preferred write path — the human reviews the draft in their mail client before sending.
-  - All mutating tools require `MAIL_MCP_WRITE_ENABLED=true`; when unset the tools are *not registered*, so the LLM cannot even enumerate them.
-  - `send_email` additionally requires `MAIL_MCP_SEND_ENABLED=true` plus `confirm=true` in the arguments.
+  - Mutating tools (`copy_email`, `move_email`, `mark_emails`, `delete_emails`, folder CRUD) require `MAIL_MCP_WRITE_ENABLED=true`; when unset they are *not registered*, so the LLM cannot even enumerate them.
+  - `send_email` and `send_draft` are *always* registered (so the LLM can guide the user through enabling them when needed) but the handlers refuse to transmit until both `MAIL_MCP_WRITE_ENABLED=true` AND `MAIL_MCP_SEND_ENABLED=true` are set. A call without the gate returns `error.code = "SEND_NOT_ENABLED"` with the env-var recipe and config-file paths. The security boundary is the gate; visibility is purely a UX affordance for the LLM. They additionally require `confirm=true` per call (distinct error code `SEND_REQUIRES_CONFIRM`).
   - `delete_emails` defaults to moving to Trash; `permanent=true` requires `MAIL_MCP_ALLOW_PERMANENT_DELETE=true` and `confirm=true`.
 - **Prompt-injection guard.** Email bodies surfaced to the LLM are wrapped in a `<untrusted_email_content>` envelope with an explicit warning. Closing-tag breakouts and zero-width characters are neutralised before wrapping.
 - **Bounded outputs.** Body chars ≤ 64k (default 16k), attachments ≤ 25 MiB, batch UIDs ≤ 100, search results ≤ 500.

@@ -22,12 +22,32 @@ def test_classify_timeout_is_retryable():
     assert out["retryable"] is True
 
 
-def test_classify_permission_denied_from_send_disabled():
+def test_classify_send_not_enabled_from_send_disabled():
+    """Default code = SEND_NOT_ENABLED; hint carries the full env-var recipe."""
     from mail_mcp.tools.send import SendDisabled
 
     out = _classify(SendDisabled("gate off"))
-    assert out["code"] == "PERMISSION_DENIED"
-    assert "MAIL_MCP" in out["hint"]
+    assert out["code"] == "SEND_NOT_ENABLED"
+    assert "MAIL_MCP_WRITE_ENABLED" in out["hint"]
+    assert "MAIL_MCP_SEND_ENABLED" in out["hint"]
+    # Remediation must mention restart so the LLM doesn't expect immediate
+    # availability after the env-var edit.
+    assert "restart" in out["hint"].lower()
+
+
+def test_classify_send_requires_confirm_uses_distinct_code():
+    """Missing ``confirm=true`` is a per-call fix — distinct code from env-var gate."""
+    from mail_mcp.tools.send import SendDisabled
+
+    out = _classify(SendDisabled(
+        "send_email requires confirm=true on the call.",
+        code=SendDisabled.REQUIRES_CONFIRM,
+    ))
+    assert out["code"] == "SEND_REQUIRES_CONFIRM"
+    assert "confirm=true" in out["hint"]
+    # Critically, the recipe for env-var gate must NOT appear here — that
+    # would mislead the LLM into telling the user to edit their config.
+    assert "MAIL_MCP_WRITE_ENABLED" not in out["hint"]
 
 
 def test_classify_unknown_falls_back():

@@ -211,11 +211,15 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 
     if not is_enabled():
         raise SendDisabled(
-            "send_draft is disabled. Set MAIL_MCP_WRITE_ENABLED=true and "
-            "MAIL_MCP_SEND_ENABLED=true in the server environment to enable it."
+            "send_draft is registered but disabled by env-var gate.",
+            code=SendDisabled.NOT_ENABLED,
         )
     if not params.confirm:
-        raise SendDisabled("send_draft requires the caller to pass confirm=true.")
+        raise SendDisabled(
+            "send_draft requires confirm=true on the call (per-tool safety, "
+            "not a configuration issue).",
+            code=SendDisabled.REQUIRES_CONFIRM,
+        )
 
     import email as _email
     import email.policy as _policy

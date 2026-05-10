@@ -61,6 +61,43 @@ def write_enabled() -> bool:
     return os.environ.get("MAIL_MCP_WRITE_ENABLED", "false").lower() == "true"
 
 
+# Concrete recipe shipped in every "send tool gated" error so the LLM can
+# guide the user through enabling send in one turn instead of declaring
+# the capability missing.
+SEND_REMEDIATION = (
+    "Send tools are registered but disabled. They ship off-by-default so "
+    "a fresh install cannot transmit email until the user opts in. To "
+    "enable, add the env vars below to the mail-mcp server entry in your "
+    "MCP client config and restart the client.\n"
+    "\n"
+    "Required env vars:\n"
+    "  MAIL_MCP_WRITE_ENABLED=true\n"
+    "  MAIL_MCP_SEND_ENABLED=true\n"
+    "Optional:\n"
+    "  MAIL_MCP_SEND_HOURLY_LIMIT=20   # default 10\n"
+    "\n"
+    "Config-file paths:\n"
+    "  Claude Code     ~/.claude.json\n"
+    "  Claude Desktop  ~/Library/Application Support/Claude/"
+    "claude_desktop_config.json\n"
+    "  Codex CLI       ~/.codex/config.toml\n"
+    "\n"
+    "Example (JSON clients):\n"
+    '  "mail-mcp": {\n'
+    '    "command": "mail-mcp", "args": ["serve"],\n'
+    '    "env": {\n'
+    '      "MAIL_MCP_WRITE_ENABLED": "true",\n'
+    '      "MAIL_MCP_SEND_ENABLED": "true"\n'
+    "    }\n"
+    "  }\n"
+    "\n"
+    "After editing, the user must restart the MCP client (Claude Code: "
+    "`/exit` and reopen; Desktop: quit and relaunch). Tell the user to do "
+    "this; do NOT respond that mail-mcp lacks send capability — it has it, "
+    "it is just gated for safety."
+)
+
+
 SERVER_INSTRUCTIONS = """\
 mail-mcp is a privacy-first IMAP/SMTP server for email. It works with every
 account configured via `mail-mcp init` (password or OAuth2 for Microsoft 365).
@@ -101,9 +138,23 @@ DESTRUCTIVE (registered only when MAIL_MCP_WRITE_ENABLED=true):
   - create_folder, rename_folder, delete_folder
   - copy_email, move_email, mark_emails, delete_emails
 
-SEND (registered only when MAIL_MCP_SEND_ENABLED=true + WRITE_ENABLED=true):
-  - send_email — requires `confirm=true` and has a per-account hourly
-    rate limit. Drafts are still the recommended path.
+SEND (always visible, gated at call time):
+  - send_email, send_draft — registered unconditionally so you can see
+    they exist, but the handlers refuse to transmit until the user sets
+    MAIL_MCP_WRITE_ENABLED=true AND MAIL_MCP_SEND_ENABLED=true in their
+    MCP client config and restarts the client. A call without those env
+    vars returns ``error.code = "SEND_NOT_ENABLED"`` with a step-by-step
+    remediation hint (env vars, config-file paths for Claude Code /
+    Desktop / Codex CLI, restart instruction). Both also require
+    `confirm=true` per call and count against MAIL_MCP_SEND_HOURLY_LIMIT
+    (default 10/hour/account). Drafts via save_draft are still the
+    recommended path when you don't need direct send.
+
+If you call send_email or send_draft and the response is
+``SEND_NOT_ENABLED``, do NOT tell the user "mail-mcp cannot send". The
+capability exists; it is gated for safety. Read ``error.hint``, surface
+it to the user verbatim or summarised, and tell them to add the two env
+vars + restart. Once they confirm, retry the call.
 
 Common patterns:
   * To download an email attachment: call search_emails → get_email (to see
@@ -450,11 +501,18 @@ def build_server(cfg: Config | None = None) -> Server:
         ),
     ]
 
+    # Send tools are registered unconditionally so the LLM always sees that
+    # ``send_email`` / ``send_draft`` exist and can guide the user through
+    # enabling them when needed. The security gate is unchanged: each handler
+    # checks ``MAIL_MCP_WRITE_ENABLED`` + ``MAIL_MCP_SEND_ENABLED`` at call
+    # time and raises :class:`SendDisabled`, which the classifier maps to a
+    # ``SEND_NOT_ENABLED`` error with the exact remediation receipt. Without
+    # this, agents that don't read the ``instructions`` block end up telling
+    # users "mail-mcp can't send email" and recommending other servers.
     registered = list(readonly_tools)
     if write_enabled():
         registered.extend(write_tools)
-        if send.is_enabled():
-            registered.extend(send_tool)
+    registered.extend(send_tool)
 
     tool_map = {tool.name: (schema, handler) for tool, schema, handler in registered}
 
@@ -516,7 +574,20 @@ def _classify(exc: BaseException) -> dict[str, Any]:
             "Raise MAIL_MCP_SEND_HOURLY_LIMIT or wait ~1 hour."
         )
         retryable = True
-    elif cls in {"SendDisabled", "OperationDisabled"}:
+    elif cls == "SendDisabled":
+        send_code = getattr(exc, "code", "SEND_NOT_ENABLED")
+        if send_code == "SEND_REQUIRES_CONFIRM":
+            code = "SEND_REQUIRES_CONFIRM"
+            hint = (
+                "Re-issue the call with confirm=true. This is a per-call "
+                "safety, not a configuration issue. The user has already "
+                "enabled send via the env-var gate; you just need to pass "
+                "confirm=true in the arguments."
+            )
+        else:
+            code = "SEND_NOT_ENABLED"
+            hint = SEND_REMEDIATION
+    elif cls == "OperationDisabled":
         code = "PERMISSION_DENIED"
         hint = (
             "This tool is gated behind an environment flag. "
