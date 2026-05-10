@@ -14,7 +14,6 @@ defence against header-injection attacks.
 
 from __future__ import annotations
 
-import base64
 import email
 import email.policy
 import smtplib
@@ -348,9 +347,14 @@ def _smtp_authenticate(server: smtplib.SMTP, account: AccountModel, credential: 
     """Authenticate an already-open SMTP session with password or XOAUTH2.
 
     Kept small and side-effect-only: callers hand us an already-EHLO'd
-    server and we leave it ready to ``send_message``. The OAuth branch uses
-    :meth:`smtplib.SMTP.auth` with a callback that returns the raw XOAUTH2
-    SASL string; SMTP base64-encodes it on the wire.
+    server and we leave it ready to ``send_message``. The OAuth branch
+    uses :meth:`smtplib.SMTP.auth` with a callback that returns the raw
+    XOAUTH2 SASL string. Per ``smtplib`` documentation the callback's
+    return value is base64-encoded by ``smtplib`` itself before being
+    sent on the wire — so we MUST hand back the raw SASL bytes, not a
+    pre-encoded string. (Until v0.3.7 we double-encoded, which made
+    Microsoft 365 SMTP OAuth fail even when token acquisition and IMAP
+    OAuth worked.)
     """
     from .credentials import AuthCredential  # local import avoids a cycle
 
@@ -359,11 +363,14 @@ def _smtp_authenticate(server: smtplib.SMTP, account: AccountModel, credential: 
             from . import oauth
 
             xoauth2 = oauth.build_xoauth2(credential.username, credential.secret)
-            # smtplib.SMTP.auth calls the callback with the challenge (empty for
-            # XOAUTH2's initial response) and expects an already-base64 ASCII
-            # string back, not raw bytes.
-            encoded = base64.b64encode(xoauth2).decode("ascii")
-            server.auth("XOAUTH2", lambda _challenge="": encoded, initial_response_ok=True)
+            # ``smtplib.SMTP.auth`` (CPython smtplib.py) calls the callback
+            # with the server challenge and base64-encodes whatever it
+            # returns. Returning a string-decoded ASCII view of the raw
+            # SASL bytes is the supported shape — anything already base64
+            # would be encoded a second time and rejected as
+            # ``535 5.7.3 Authentication unsuccessful``.
+            sasl = xoauth2.decode("ascii")
+            server.auth("XOAUTH2", lambda _challenge="": sasl, initial_response_ok=True)
             return
         server.login(credential.username, credential.secret)
         return

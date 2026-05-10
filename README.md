@@ -63,10 +63,10 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `create_folder` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Create an IMAP folder (idempotent) |
 | `rename_folder` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Rename a folder, refuses collisions |
 | `delete_folder` | 🗑️ | `MAIL_MCP_WRITE_ENABLED=true` | Delete a folder; non-empty requires `confirm=true` |
-| `send_email` | 🚀 | `MAIL_MCP_WRITE_ENABLED=true` + `MAIL_MCP_SEND_ENABLED=true` + `confirm=true` | Send via SMTP (rate-limited per account) |
-| `send_draft` | 🚀 | same as `send_email` | Send an existing draft and remove it from Drafts |
+| `send_email` | 🚀 | `MAIL_MCP_WRITE_ENABLED=true` + `MAIL_MCP_SEND_ENABLED=true` + `confirm=true` | Send via SMTP (rate-limited per account). Visible always; refuses to transmit until both env vars are set. |
+| `send_draft` | 🚀 | same as `send_email` | Send an existing draft and remove it from Drafts. |
 
-When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the write tools **are not visible to the model at all** — it cannot enumerate them, let alone call them.
+When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the **destructive write tools** (`copy_email`, `move_email`, `mark_emails`, `delete_emails`, folder ops) are not registered — the model cannot enumerate them. The **send tools** are registered always so the model sees they exist; calling them without the env-var gate returns `error.code = "SEND_NOT_ENABLED"` with a step-by-step remediation hint (env vars, config-file paths, restart). This trade-off — visibility for guidance, not capability — was added in v0.3.8 after agents started telling users "mail-mcp can't send email" instead of explaining the gate.
 
 ### Common flows (for LLMs)
 
@@ -254,7 +254,7 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 149 tests covering the safety boundaries
+pytest         # 181 tests covering the safety boundaries
 ruff check src tests
 ```
 

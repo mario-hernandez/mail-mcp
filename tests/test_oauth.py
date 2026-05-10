@@ -23,6 +23,53 @@ def test_build_xoauth2_format() -> None:
     assert payload == b"user=a@b.com\x01auth=Bearer TOKEN\x01\x01"
 
 
+def test_smtp_authenticate_returns_raw_xoauth2_string_to_smtplib() -> None:
+    """``smtplib.SMTP.auth`` base64-encodes the callback return value itself.
+
+    Until v0.3.8 the callback pre-encoded the SASL payload, so smtplib
+    base64-encoded it a second time and Microsoft 365 rejected the
+    authentication with ``535 5.7.3 Authentication unsuccessful``. This
+    test pins that the callback now hands back the *raw* XOAUTH2 SASL
+    string, which is what smtplib expects.
+    """
+    from unittest.mock import MagicMock
+
+    from mail_mcp.config import AccountModel
+    from mail_mcp.credentials import AuthCredential
+    from mail_mcp.smtp_client import _smtp_authenticate
+
+    captured_callback: list = []
+
+    def fake_auth(mechanism, authobject, *, initial_response_ok=True):
+        # Mirror smtplib's own behaviour: call the callback with the
+        # initial empty challenge and remember what comes back.
+        captured_callback.append(authobject(b""))
+
+    server = MagicMock()
+    server.auth = fake_auth
+    acct = AccountModel(
+        alias="ox",
+        email="o@example.com",
+        imap_host="outlook.office365.com",
+        smtp_host="smtp-mail.outlook.com",
+    )
+    cred = AuthCredential(kind="oauth2", username="o@example.com", secret="ACC_TOKEN")
+
+    _smtp_authenticate(server, acct, cred)
+
+    assert len(captured_callback) == 1
+    sasl = captured_callback[0]
+    # The callback must hand back the SASL string verbatim — smtplib
+    # encodes it. Pre-encoding caused the double-base64 535 failure.
+    assert sasl == "user=o@example.com\x01auth=Bearer ACC_TOKEN\x01\x01"
+    # Defence-in-depth: explicitly assert it is NOT a base64-encoded form.
+    import base64
+    encoded_form = base64.b64encode(
+        b"user=o@example.com\x01auth=Bearer ACC_TOKEN\x01\x01"
+    ).decode("ascii")
+    assert sasl != encoded_form
+
+
 def test_build_xoauth2_rejects_empty_inputs() -> None:
     with pytest.raises(oauth.OAuthError):
         oauth.build_xoauth2("", "TOKEN")

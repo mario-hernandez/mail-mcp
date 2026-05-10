@@ -176,6 +176,169 @@ def detect_special_mailboxes(client: IMAPClient) -> dict[str, str]:
     return found
 
 
+# Localised system-mailbox names — RFC 6154 SPECIAL-USE is the canonical
+# signal, these lists are the last-resort fallbacks for servers that do
+# not advertise it. Order matters: check English first (covers Gmail /
+# Fastmail / iCloud / generic Cyrus), then the localisations Outlook /
+# Exchange / IONOS / GMX use.
+_LOCALISED_DRAFTS_FALLBACKS = (
+    "Drafts",
+    "Borradores",       # Spanish — Outlook 365 ES, IONOS ES
+    "Brouillons",       # French — Outlook 365 FR
+    "Entwürfe",         # German — Outlook 365 DE, GMX, Web.de
+    "Bozze",            # Italian
+    "Rascunhos",        # Portuguese
+    "Concepten",        # Dutch
+    "Utkast",           # Swedish / Norwegian
+    "Черновики",        # Russian
+    "下書き",            # Japanese
+    "草稿",              # Chinese
+    "[Gmail]/Drafts",   # Gmail folder-style
+    "INBOX.Drafts",     # Cyrus / Dovecot INBOX-prefixed
+    "INBOX.Borradores",
+    "INBOX.Brouillons",
+    "INBOX.Entwürfe",
+)
+
+_LOCALISED_TRASH_FALLBACKS = (
+    "Trash",
+    "Deleted Items",                # Exchange / Outlook English
+    "Papelera",                     # Spanish (IONOS, generic)
+    "Elementos eliminados",         # Outlook 365 ES
+    "Corbeille",                    # French generic
+    "Éléments supprimés",           # Outlook 365 FR
+    "Papierkorb",                   # German (GMX, Web.de)
+    "Gelöschte Elemente",           # Outlook 365 DE
+    "Cestino",                      # Italian
+    "Posta eliminata",              # Outlook 365 IT
+    "Lixo",                         # Portuguese (PT)
+    "Lixeira",                      # Portuguese (BR)
+    "Itens Excluídos",              # Outlook 365 PT-BR
+    "Prullenbak",                   # Dutch
+    "Verwijderde items",            # Outlook 365 NL
+    "Papperskorgen",                # Swedish
+    "Søppel",                       # Norwegian
+    "Корзина",                      # Russian
+    "Удалённые",                    # Outlook 365 RU
+    "ゴミ箱",                        # Japanese
+    "回收站",                        # Chinese (CN)
+    "已删除邮件",                     # Outlook 365 CN
+    "[Gmail]/Trash",
+    "INBOX.Trash",
+    "INBOX.Papelera",
+    "INBOX.Corbeille",
+    "INBOX.Papierkorb",
+)
+
+
+def _resolve_special_mailbox(
+    client: IMAPClient,
+    *,
+    hint: str | None,
+    configured: str,
+    special_use_flag: str,
+    fallbacks: tuple[str, ...],
+    label: str,
+) -> str:
+    """Internal resolver shared by drafts and trash lookups.
+
+    The single ``LIST *`` issued for SPECIAL-USE detection is reused for
+    all existence checks, so the helper costs one extra IMAP round-trip
+    in the worst case.
+
+    Resolution order:
+
+    1. ``hint`` if supplied and that folder exists on the server.
+    2. The folder advertised with the requested SPECIAL-USE flag — the
+       canonical RFC 6154 signal, and the one the user's mail client
+       treats as authoritative. This wins over a potentially-stale
+       configured name (a localised account can carry both a residual
+       English folder from migration AND a SPECIAL-USE-flagged real
+       mailbox; picking the flagged one keeps the user's mail-client
+       view consistent).
+    3. ``configured`` if it exists on the server.
+    4. The first match from ``fallbacks``.
+    """
+    folders = {f.name: f for f in list_folders(client)}
+
+    def _exists(name: str) -> bool:
+        return name in folders
+
+    if hint and _exists(hint):
+        return hint
+    for f in folders.values():
+        if f.special_use == special_use_flag:
+            return f.name
+    if configured and _exists(configured):
+        return configured
+    for name in fallbacks:
+        if _exists(name):
+            return name
+    raise RuntimeError(
+        f"no {label} mailbox found on the server. Tried RFC 6154 "
+        f"SPECIAL-USE {special_use_flag}, the configured name "
+        f"{configured!r}, and the common localised fallbacks. Inspect "
+        "`mail-mcp doctor` and re-run `mail-mcp init` to refresh the "
+        "SPECIAL-USE detection, or pass an explicit `mailbox=` argument."
+    )
+
+
+def resolve_drafts_mailbox(
+    client: IMAPClient,
+    account: AccountModel,
+    *,
+    hint: str | None = None,
+) -> str:
+    """Return the actual drafts mailbox name on the server.
+
+    The wizard normally writes the SPECIAL-USE-discovered name to
+    ``account.drafts_mailbox`` at setup time, but accounts that predate
+    that detection logic — or servers that did not advertise SPECIAL-USE
+    during the initial probe — can end up with the literal default
+    ``"Drafts"`` in their config. APPEND then fails with ``[TRYCREATE]
+    folder does not exist`` on any non-English mailbox.
+
+    See :func:`_resolve_special_mailbox` for the resolution order
+    (hint → SPECIAL-USE \\Drafts → configured name → localised fallback).
+    """
+    return _resolve_special_mailbox(
+        client,
+        hint=hint,
+        configured=(account.drafts_mailbox or "").strip(),
+        special_use_flag="\\Drafts",
+        fallbacks=_LOCALISED_DRAFTS_FALLBACKS,
+        label="drafts",
+    )
+
+
+def resolve_trash_mailbox(
+    client: IMAPClient,
+    account: AccountModel,
+    *,
+    hint: str | None = None,
+) -> str:
+    """Return the actual trash mailbox name on the server.
+
+    Mirrors :func:`resolve_drafts_mailbox` for the ``\\Trash`` SPECIAL-USE
+    flag. Localised Outlook / Exchange accounts use names like
+    ``Papelera`` (ES), ``Elementos eliminados`` (Outlook ES),
+    ``Corbeille`` (FR), ``Éléments supprimés`` (Outlook FR), or
+    ``Papierkorb`` (DE) — which a stale account config of ``"Trash"``
+    will not match. Without resolution, ``delete_emails(permanent=false)``
+    silently moves messages into a literal ``Trash`` folder the server
+    will sometimes auto-create on first use, separate from the mailbox
+    the user's mail client treats as their trash.
+    """
+    return _resolve_special_mailbox(
+        client,
+        hint=hint,
+        configured=(account.trash_mailbox or "").strip(),
+        special_use_flag="\\Trash",
+        fallbacks=_LOCALISED_TRASH_FALLBACKS,
+        label="trash",
+    )
+
+
 def _flag_to_str(flag: Any) -> str:
     if isinstance(flag, bytes):
         try:
@@ -409,27 +572,45 @@ def download_attachment(
 _APPENDUID_RE = re.compile(rb"APPENDUID\s+\d+\s+(\d+)")
 
 
-def save_draft(client: IMAPClient, *, account: AccountModel, message_bytes: bytes) -> int:
+def save_draft(
+    client: IMAPClient, *, account: AccountModel, message_bytes: bytes,
+) -> tuple[str, int]:
     """Append a pre-built MIME message to the drafts mailbox.
 
-    Returns the new UID. Servers that advertise UIDPLUS (RFC 4315) reply
-    with ``[APPENDUID <uidvalidity> <uid>] APPEND completed.``; ``imapclient``
-    forwards the raw response bytes, so we extract the trailing UID token.
-    Fallback for non-UIDPLUS servers: interpret the response as a bare
-    integer, or return 0 when neither shape is recognised.
+    Returns ``(mailbox, uid)`` where ``mailbox`` is the actual server
+    folder used — not necessarily ``account.drafts_mailbox``, which can
+    be a stale default like ``"Drafts"`` when the real mailbox is
+    ``Borradores`` / ``Brouillons`` / ``Entwürfe``. Surfacing the
+    resolved name lets callers report it in their tool result so
+    downstream ``update_draft`` / ``send_draft`` / ``get_email`` calls
+    target the right folder.
+
+    Servers that advertise UIDPLUS (RFC 4315) reply with
+    ``[APPENDUID <uidvalidity> <uid>] APPEND completed.``; ``imapclient``
+    forwards the raw response bytes, so we extract the trailing UID
+    token. Fallback for non-UIDPLUS servers: interpret the response as
+    a bare integer, or return UID 0 when neither shape is recognised.
+
+    The drafts mailbox is resolved at runtime via
+    :func:`resolve_drafts_mailbox` (SPECIAL-USE first, configured name,
+    localised fallback), so accounts whose stored ``drafts_mailbox`` is
+    the literal default ``"Drafts"`` still APPEND correctly on servers
+    where the real mailbox is named ``Borradores`` / ``Brouillons`` /
+    ``Entwürfe`` / etc.
     """
-    validate_mailbox_name(account.drafts_mailbox)
-    raw = client.append(account.drafts_mailbox, message_bytes, flags=[b"\\Draft"])
+    drafts_mailbox = resolve_drafts_mailbox(client, account)
+    validate_mailbox_name(drafts_mailbox)
+    raw = client.append(drafts_mailbox, message_bytes, flags=[b"\\Draft"])
     if isinstance(raw, int):
-        return raw
+        return drafts_mailbox, raw
     data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
     m = _APPENDUID_RE.search(bytes(data))
     if m:
-        return int(m.group(1))
+        return drafts_mailbox, int(m.group(1))
     try:
-        return int(bytes(data).strip())
+        return drafts_mailbox, int(bytes(data).strip())
     except (TypeError, ValueError):
-        return 0
+        return drafts_mailbox, 0
 
 
 def copy_uids(
@@ -626,6 +807,48 @@ def set_flags(
     return len(uids)
 
 
+class UIDPlusRequired(RuntimeError):
+    """Raised when an operation needs RFC 4315 UIDPLUS but the server lacks it.
+
+    Carries a stable ``code`` so callers (and the MCP error classifier) can
+    branch on it programmatically. The ``mark_deleted`` fallback is the
+    safe alternative for caller-side mutations like ``update_draft`` /
+    ``send_draft`` that only intend to remove a single UID they just
+    created — leaving a ``\\Deleted``-flagged duplicate is preferable to
+    expunging unrelated messages another client has already flagged.
+    """
+
+    code = "UIDPLUS_REQUIRED_FOR_SAFE_EXPUNGE"
+
+
+def _has_uidplus(client: IMAPClient) -> bool:
+    """True when the server advertises RFC 4315 UIDPLUS in its capabilities."""
+    try:
+        caps = client.capabilities()
+    except Exception:  # noqa: BLE001 — be conservative on capability probes
+        return False
+    return b"UIDPLUS" in caps
+
+
+def safe_uid_expunge(client: IMAPClient, *, uids: list[int]) -> None:
+    """Expunge exactly the supplied UIDs from the currently-selected mailbox.
+
+    Bare ``EXPUNGE`` removes every message already flagged ``\\Deleted`` in
+    the selected mailbox — including messages another client (Outlook,
+    a phone app, a previous failed run) flagged earlier. RFC 4315
+    ``UID EXPUNGE`` (UIDPLUS) is the only way to expunge a specific set
+    safely. We refuse to fall back to bare ``EXPUNGE`` because that would
+    silently reintroduce the very bug this helper exists to prevent.
+    """
+    if not _has_uidplus(client):
+        raise UIDPlusRequired(
+            "server does not advertise UIDPLUS, so EXPUNGE cannot be "
+            "scoped to specific UIDs without risking unrelated messages "
+            "another client has already flagged \\Deleted."
+        )
+    client.uid_expunge(uids)
+
+
 def delete_uids(
     client: IMAPClient,
     *,
@@ -638,6 +861,14 @@ def delete_uids(
 
     Permanent deletion is irreversible and is gated by the caller both via the
     ``permanent`` flag and by the ``MAIL_MCP_ALLOW_PERMANENT_DELETE`` env var.
+
+    The expunge step uses :func:`safe_uid_expunge`, which requires the
+    server to advertise RFC 4315 UIDPLUS. Without UIDPLUS the previous
+    bare ``EXPUNGE`` would have removed every other message the user (or
+    another mail client) had marked ``\\Deleted`` in the same folder.
+    Failing closed is the right default: callers that only want to
+    remove a single UID they just created can catch
+    :class:`UIDPlusRequired` and fall back to mark-deleted-without-expunge.
     """
     validate_mailbox_name(mailbox)
     validate_mailbox_name(trash_mailbox)
@@ -647,8 +878,23 @@ def delete_uids(
         raise ValidationError(f"batch too large (max {MAX_BATCH_UIDS} uids)")
     if permanent:
         client.select_folder(mailbox, readonly=False)
+        # Probe UIDPLUS BEFORE flagging so a server without UIDPLUS produces
+        # a clean failure with no mutation. Until v0.3.8 we flagged the UIDs
+        # ``\\Deleted`` first and only then asked ``safe_uid_expunge`` to
+        # check the capability, which left the target UIDs tombstoned on a
+        # legacy server even when the call ultimately raised — a later
+        # expunge from any client could finish the job. The probe here
+        # makes the failure path rollback-safe.
+        if not _has_uidplus(client):
+            raise UIDPlusRequired(
+                "server does not advertise UIDPLUS, so EXPUNGE cannot be "
+                "scoped to specific UIDs without risking unrelated messages "
+                "another client has already flagged \\Deleted. No messages "
+                "were mutated. Move-to-trash (permanent=false) works without "
+                "UIDPLUS."
+            )
         client.add_flags(uids, [b"\\Deleted"])
-        client.expunge()
+        safe_uid_expunge(client, uids=uids)
         return len(uids)
     return move_uids(client, source=mailbox, destination=trash_mailbox, uids=uids)
 

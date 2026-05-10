@@ -10,9 +10,10 @@ prefer ``save_draft`` / ``reply_draft`` / ``forward_draft`` over
 from __future__ import annotations
 
 from .. import imap_client, smtp_client
-from ..config import Config
+from ..config import AccountModel, Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
+from ..safety.validation import ValidationError
 from .schemas import (
     ForwardDraftInput,
     ReplyDraftInput,
@@ -20,6 +21,41 @@ from .schemas import (
     SendDraftInput,
     UpdateDraftInput,
 )
+
+
+def _drafts_mailbox_strict(
+    client, account: AccountModel, override: str | None, *, tool: str,
+) -> str:
+    """Resolve the drafts mailbox and refuse caller-supplied non-drafts overrides.
+
+    ``update_draft`` and ``send_draft`` both end with a permanent delete
+    of the source UID. Without this check, a caller (or a prompt-injected
+    model on a default-visible draft tool) could pass
+    ``mailbox="INBOX"`` plus an arbitrary UID and the handler would
+    happily APPEND a copy to Drafts and then UID-expunge the original
+    from INBOX — bypassing ``MAIL_MCP_WRITE_ENABLED``,
+    ``MAIL_MCP_ALLOW_PERMANENT_DELETE``, and the per-call ``confirm=true``
+    that ``delete_emails`` requires for the same primitive. That is a
+    trust-boundary violation in a tool the user expects to operate
+    only on drafts.
+
+    The strict resolution: always derive the drafts mailbox from server
+    state (SPECIAL-USE \\Drafts → configured value → localised list).
+    If the caller provided ``override``, it must equal that resolved
+    name; anything else raises :class:`ValidationError` with a clear
+    explanation. Pre-flight fails before any IMAP fetch / append /
+    delete, so a rejected call mutates nothing.
+    """
+    resolved = imap_client.resolve_drafts_mailbox(client, account)
+    if override is not None and override != resolved:
+        raise ValidationError(
+            f"{tool} only operates on the account's drafts mailbox. "
+            f"Resolved drafts mailbox is {resolved!r}; got "
+            f"mailbox={override!r}. Pass mailbox=None (the default) to "
+            "let the server-side SPECIAL-USE detection pick the right "
+            "folder, or pass exactly the resolved name above."
+        )
+    return resolved
 
 
 def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
@@ -40,10 +76,12 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
     # will re-enter BCC at send time. Drafts with BCC headers break some
     # providers' threading.
     with imap_client.connect(acct, creds) as c:
-        draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        drafts_mailbox, draft_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
     }
@@ -65,10 +103,12 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
             reply_all=params.reply_all,
             include_original_quote=params.include_original_quote,
         )
-        draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        drafts_mailbox, draft_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
         "in_reply_to": msg.get("In-Reply-To"),
@@ -100,8 +140,9 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
     acct = cfg.account(params.account)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
+        mailbox = _drafts_mailbox_strict(c, acct, params.mailbox, tool="update_draft")
         raw, headers = imap_client.fetch_raw_message(
-            c, mailbox=params.mailbox, uid=params.uid,
+            c, mailbox=mailbox, uid=params.uid,
         )
         original = _email.message_from_bytes(raw, policy=_policy.default)
         if params.to is not None:
@@ -144,21 +185,56 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         if params.preserve_message_id and original.get("Message-ID"):
             del msg["Message-ID"]
             msg["Message-ID"] = original["Message-ID"]
-        new_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
-        imap_client.delete_uids(
-            c,
-            mailbox=params.mailbox,
-            uids=[params.uid],
-            trash_mailbox=acct.trash_mailbox,
-            permanent=True,
+        new_drafts_mailbox, new_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
         )
-    return {
+        warning = _delete_old_draft_uid_safely(
+            c, mailbox=mailbox, uid=params.uid, trash_mailbox=acct.trash_mailbox,
+        )
+    response = {
         "account": acct.alias,
-        "mailbox": params.mailbox,
+        "mailbox": new_drafts_mailbox,
         "old_uid": params.uid,
         "new_uid": int(new_uid),
         "message_id": msg["Message-ID"],
     }
+    if warning:
+        response["warning"] = warning
+    return response
+
+
+def _delete_old_draft_uid_safely(
+    client, *, mailbox: str, uid: int, trash_mailbox: str,
+) -> str | None:
+    """Delete the previous draft UID, falling back to mark-deleted on no-UIDPLUS.
+
+    ``update_draft`` and ``send_draft`` both APPEND a new copy and then
+    have to remove the old UID. Bare ``EXPUNGE`` would risk wiping
+    unrelated ``\\Deleted``-flagged messages in the same folder, and the
+    safe ``UID EXPUNGE`` requires RFC 4315 UIDPLUS. When the server does
+    not advertise UIDPLUS we fall back to flagging the old UID
+    ``\\Deleted`` without expunging — the user sees a duplicate the next
+    time their mail client re-syncs, which is recoverable; expunging
+    other people's messages is not.
+    """
+    try:
+        imap_client.delete_uids(
+            client,
+            mailbox=mailbox,
+            uids=[uid],
+            trash_mailbox=trash_mailbox,
+            permanent=True,
+        )
+        return None
+    except imap_client.UIDPlusRequired:
+        client.select_folder(mailbox, readonly=False)
+        client.add_flags([uid], [b"\\Deleted"])
+        return (
+            f"server does not advertise UIDPLUS; the previous draft "
+            f"(uid={uid}) has been flagged \\Deleted but not expunged "
+            "to avoid removing unrelated messages another client may "
+            "have flagged. Your mail client will hide it on next sync."
+        )
 
 
 def send_draft(cfg: Config, params: SendDraftInput) -> dict:
@@ -171,11 +247,15 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 
     if not is_enabled():
         raise SendDisabled(
-            "send_draft is disabled. Set MAIL_MCP_WRITE_ENABLED=true and "
-            "MAIL_MCP_SEND_ENABLED=true in the server environment to enable it."
+            "send_draft is registered but disabled by env-var gate.",
+            code=SendDisabled.NOT_ENABLED,
         )
     if not params.confirm:
-        raise SendDisabled("send_draft requires the caller to pass confirm=true.")
+        raise SendDisabled(
+            "send_draft requires confirm=true on the call (per-tool safety, "
+            "not a configuration issue).",
+            code=SendDisabled.REQUIRES_CONFIRM,
+        )
 
     import email as _email
     import email.policy as _policy
@@ -184,8 +264,9 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
+        mailbox = _drafts_mailbox_strict(c, acct, params.mailbox, tool="send_draft")
         raw, _headers = imap_client.fetch_raw_message(
-            c, mailbox=params.mailbox, uid=params.uid,
+            c, mailbox=mailbox, uid=params.uid,
         )
         msg = _email.message_from_bytes(raw, policy=_policy.default)
         # Strip any X-* or transport headers the IMAP server added
@@ -193,19 +274,18 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
             if hdr in msg:
                 del msg[hdr]
         message_id = smtp_client.send(acct, creds, msg)
-        imap_client.delete_uids(
-            c,
-            mailbox=params.mailbox,
-            uids=[params.uid],
-            trash_mailbox=acct.trash_mailbox,
-            permanent=True,
+        warning = _delete_old_draft_uid_safely(
+            c, mailbox=mailbox, uid=params.uid, trash_mailbox=acct.trash_mailbox,
         )
-    return {
+    response: dict = {
         "account": acct.alias,
         "message_id": message_id,
         "draft_uid": params.uid,
         "status": "sent",
     }
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
@@ -224,10 +304,12 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
             cc=params.cc,
             bcc=params.bcc,
         )
-        draft_uid = imap_client.save_draft(c, account=acct, message_bytes=bytes(msg))
+        drafts_mailbox, draft_uid = imap_client.save_draft(
+            c, account=acct, message_bytes=bytes(msg),
+        )
     return {
         "account": acct.alias,
-        "mailbox": acct.drafts_mailbox,
+        "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
         "subject": msg.get("Subject"),
