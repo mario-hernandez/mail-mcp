@@ -10,9 +10,10 @@ prefer ``save_draft`` / ``reply_draft`` / ``forward_draft`` over
 from __future__ import annotations
 
 from .. import imap_client, smtp_client
-from ..config import Config
+from ..config import AccountModel, Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
+from ..safety.validation import ValidationError
 from .schemas import (
     ForwardDraftInput,
     ReplyDraftInput,
@@ -20,6 +21,41 @@ from .schemas import (
     SendDraftInput,
     UpdateDraftInput,
 )
+
+
+def _drafts_mailbox_strict(
+    client, account: AccountModel, override: str | None, *, tool: str,
+) -> str:
+    """Resolve the drafts mailbox and refuse caller-supplied non-drafts overrides.
+
+    ``update_draft`` and ``send_draft`` both end with a permanent delete
+    of the source UID. Without this check, a caller (or a prompt-injected
+    model on a default-visible draft tool) could pass
+    ``mailbox="INBOX"`` plus an arbitrary UID and the handler would
+    happily APPEND a copy to Drafts and then UID-expunge the original
+    from INBOX — bypassing ``MAIL_MCP_WRITE_ENABLED``,
+    ``MAIL_MCP_ALLOW_PERMANENT_DELETE``, and the per-call ``confirm=true``
+    that ``delete_emails`` requires for the same primitive. That is a
+    trust-boundary violation in a tool the user expects to operate
+    only on drafts.
+
+    The strict resolution: always derive the drafts mailbox from server
+    state (SPECIAL-USE \\Drafts → configured value → localised list).
+    If the caller provided ``override``, it must equal that resolved
+    name; anything else raises :class:`ValidationError` with a clear
+    explanation. Pre-flight fails before any IMAP fetch / append /
+    delete, so a rejected call mutates nothing.
+    """
+    resolved = imap_client.resolve_drafts_mailbox(client, account)
+    if override is not None and override != resolved:
+        raise ValidationError(
+            f"{tool} only operates on the account's drafts mailbox. "
+            f"Resolved drafts mailbox is {resolved!r}; got "
+            f"mailbox={override!r}. Pass mailbox=None (the default) to "
+            "let the server-side SPECIAL-USE detection pick the right "
+            "folder, or pass exactly the resolved name above."
+        )
+    return resolved
 
 
 def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
@@ -104,7 +140,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
     acct = cfg.account(params.account)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
-        mailbox = params.mailbox or imap_client.resolve_drafts_mailbox(c, acct)
+        mailbox = _drafts_mailbox_strict(c, acct, params.mailbox, tool="update_draft")
         raw, headers = imap_client.fetch_raw_message(
             c, mailbox=mailbox, uid=params.uid,
         )
@@ -228,7 +264,7 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
-        mailbox = params.mailbox or imap_client.resolve_drafts_mailbox(c, acct)
+        mailbox = _drafts_mailbox_strict(c, acct, params.mailbox, tool="send_draft")
         raw, _headers = imap_client.fetch_raw_message(
             c, mailbox=mailbox, uid=params.uid,
         )
