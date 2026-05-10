@@ -7,6 +7,74 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [0.3.7] — 2026-05-10
+
+### Fixed
+
+- **`save_draft` no longer fails with `[TRYCREATE] folder does not exist`
+  on localised IMAP accounts.** When the account's stored
+  `drafts_mailbox` is the literal default `"Drafts"` but the server's
+  real drafts folder is `Borradores` / `Brouillons` / `Entwürfe` /
+  `Bozze` / etc., APPEND used to fail. The drafts mailbox is now
+  resolved at call time via a new `resolve_drafts_mailbox` helper:
+  RFC 6154 SPECIAL-USE `\Drafts` wins over a stale configured value,
+  and a curated localised fallback list (~17 entries covering
+  Outlook 365, IONOS, GMX, Cyrus / Dovecot `INBOX.`-prefixed,
+  `[Gmail]/Drafts`) handles servers that don't advertise SPECIAL-USE.
+  `imap_client.save_draft` now returns `(mailbox, uid)` instead of just
+  `uid` so all four draft-creating tools (`save_draft`, `reply_draft`,
+  `forward_draft`, `update_draft`) can surface the actual mailbox in
+  their response — a follow-up `update_draft(mailbox=…, uid=…)` from
+  the LLM uses the real folder, not the stale config value.
+- **`list_drafts` searches the resolved mailbox.** Before, a draft
+  created in `Borradores` was invisible because `list_drafts` queried
+  the stale `"Drafts"` configured value and returned zero results.
+- **`delete_email(permanent=false)` resolves Trash the same way.** The
+  v0.3.7 work brings a symmetric `resolve_trash_mailbox` helper plus a
+  ~25-entry localised fallback list including Outlook 365 variants
+  (`Elementos eliminados`, `Éléments supprimés`, `Gelöschte Elemente`,
+  `Itens Excluídos`, `Verwijderde items`, …). Without resolution,
+  deleted mail silently landed in a residual `Trash` folder the user's
+  mail client did not show as their trash.
+- **Permanent delete now uses RFC 4315 `UID EXPUNGE`** via the new
+  `imap_client.safe_uid_expunge` helper. Bare `EXPUNGE` removes every
+  message in the selected mailbox already flagged `\Deleted`,
+  including messages another mail client (Outlook, a phone, an earlier
+  failed run) had flagged. Servers without UIDPLUS now surface a typed
+  `UIDPlusRequired` error with stable code
+  `UIDPLUS_REQUIRED_FOR_SAFE_EXPUNGE`. `update_draft` / `send_draft`
+  catch that error and fall back to flagging the old UID `\Deleted`
+  *without* expunging — recoverable on next mail-client sync — and
+  return a `warning` field in the response. The UIDPLUS probe now
+  happens BEFORE any `\Deleted` mutation, so a no-UIDPLUS rejection
+  leaves the server state untouched.
+- **SMTP XOAUTH2 was double-base64-encoded**, breaking Microsoft 365
+  OAuth SMTP authentication (`535 5.7.3 Authentication unsuccessful`)
+  even when token acquisition and IMAP OAuth worked. Per CPython
+  smtplib's documented contract `smtplib.SMTP.auth` base64-encodes the
+  callback's return value itself, so the callback must hand back the
+  raw SASL string. Why no one hit it: most users either run drafts-only
+  (IMAP APPEND via `imapclient.oauth2_login`, a different auth path
+  that worked) or do not enable `MAIL_MCP_SEND_ENABLED=true` with M365
+  OAuth.
+
+### Security
+
+- **`update_draft` and `send_draft` no longer accept arbitrary
+  mailboxes.** Until v0.3.7 the `mailbox=` parameter was caller-
+  controlled and the handler used it both to fetch the source UID and
+  to permanently delete it. A prompt-injected LLM on the
+  default-visible `update_draft` could have called
+  `update_draft(uid=42, mailbox="INBOX", body="…")` and the handler
+  would have APPENDed a copy to Drafts and then UID-expunged INBOX/42 —
+  a permanent-delete primitive bypassing `MAIL_MCP_WRITE_ENABLED`,
+  `MAIL_MCP_ALLOW_PERMANENT_DELETE`, and `confirm=true`. The new
+  `_drafts_mailbox_strict` helper validates the override against the
+  server-resolved drafts mailbox before any IMAP fetch / append /
+  delete; any mismatch raises `ValidationError` with no mutation.
+
 ### Changed
 
 - **`send_email` and `send_draft` are now registered unconditionally**,
@@ -39,6 +107,22 @@ minor bump and are called out explicitly.
   SEND_NOT_ENABLED, do NOT tell the user 'mail-mcp cannot send'."
 
   README and SECURITY.md updated to describe the visibility/gate split.
+
+### Internal
+
+- The branch went through two rounds of Codex adversarial review.
+  Round 1 caught two real issues that are now fixed in this release:
+  draft tool responses reported `acct.drafts_mailbox` (stale) instead
+  of the resolved mailbox; the resolver preferred a configured-but-
+  not-flagged folder over a SPECIAL-USE-flagged real one. Round 2
+  caught the `update_draft` mailbox bypass and the
+  flag-before-UIDPLUS-probe ordering, both fixed above.
+
+- New helper `smtp_client.carry_over_attachments(src, dst)` — copies
+  every attachment-like part from one EmailMessage to another,
+  re-attaching `message/rfc822` parts as objects so the body survives.
+  Used by `update_draft` to preserve attachments when the caller does
+  not pass `attachments=`.
 
 ## [0.3.6] — 2026-04-27
 
