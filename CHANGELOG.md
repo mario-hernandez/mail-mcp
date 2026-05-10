@@ -9,6 +9,24 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.8] — 2026-05-10
+
+### Documentation
+
+- Doc-fix release. The README and several test docstrings / source
+  comments shipped in v0.3.7 referenced "v0.3.8" as the version where
+  send tools became always-visible / EXPUNGE became UID-scoped /
+  XOAUTH2 stopped being double-encoded / etc. — those changes
+  actually shipped in **v0.3.7**. The references were a planning
+  artifact from when the next release was tentatively numbered
+  v0.3.8 before being cut as v0.3.7. No code or behaviour changes
+  in this release.
+
+  Updated files: `README.md`, `src/mail_mcp/imap_client.py` (one
+  comment), `tests/test_oauth.py`, `tests/test_server_gating.py`,
+  `tests/test_drafts_mailbox_resolution.py`,
+  `tests/test_safe_uid_expunge.py`.
+
 ## [0.3.7] — 2026-05-10
 
 ### Fixed

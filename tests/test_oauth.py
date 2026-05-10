@@ -26,7 +26,7 @@ def test_build_xoauth2_format() -> None:
 def test_smtp_authenticate_returns_raw_xoauth2_string_to_smtplib() -> None:
     """``smtplib.SMTP.auth`` base64-encodes the callback return value itself.
 
-    Until v0.3.8 the callback pre-encoded the SASL payload, so smtplib
+    Until v0.3.7 the callback pre-encoded the SASL payload, so smtplib
     base64-encoded it a second time and Microsoft 365 rejected the
     authentication with ``535 5.7.3 Authentication unsuccessful``. This
     test pins that the callback now hands back the *raw* XOAUTH2 SASL

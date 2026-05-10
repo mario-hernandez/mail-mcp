@@ -68,7 +68,7 @@ def test_delete_uids_permanent_uses_uid_expunge_under_uidplus():
 def test_delete_uids_permanent_raises_without_mutation_when_uidplus_missing():
     """No-UIDPLUS must fail BEFORE any \\Deleted flagging.
 
-    Pin Codex finding (medium): until v0.3.8 the handler set ``\\Deleted``
+    Pin Codex finding (medium): until v0.3.7 the handler set ``\\Deleted``
     first and only then probed UIDPLUS, so a legacy server's failure path
     still tombstoned the target UIDs. Some clients hide
     ``\\Deleted``-flagged messages and a later EXPUNGE from any source

@@ -163,7 +163,7 @@ def test_resolve_prefers_special_use_over_residual_plain_drafts_folder():
 def test_list_drafts_tool_searches_resolved_mailbox():
     """``list_drafts`` must query the same mailbox where ``save_draft`` lands.
 
-    Pin Codex's gap: until v0.3.8 ``list_drafts`` searched
+    Pin Codex's gap: until v0.3.7 ``list_drafts`` searched
     ``acct.drafts_mailbox`` directly. On a stale-config localised
     account that means ``save_draft`` correctly creates a draft in
     ``Borradores`` but ``list_drafts`` searches ``"Drafts"`` and

@@ -36,7 +36,7 @@ def _registered_tool_names(monkeypatch=None) -> set[str]:
 
 
 def test_readonly_only_by_default(monkeypatch):
-    """Even with no env vars, send tools stay visible (option A — v0.3.8+)."""
+    """Even with no env vars, send tools stay visible (option A — v0.3.7+)."""
     monkeypatch.delenv("MAIL_MCP_WRITE_ENABLED", raising=False)
     monkeypatch.delenv("MAIL_MCP_SEND_ENABLED", raising=False)
 
@@ -48,7 +48,7 @@ def test_readonly_only_by_default(monkeypatch):
     # Write tools NOT visible without WRITE_ENABLED.
     assert "delete_emails" not in names
     assert "move_email" not in names
-    # Send tools VISIBLE always — that is the v0.3.8 contract change.
+    # Send tools VISIBLE always — that is the v0.3.7 contract change.
     assert "send_email" in names
     assert "send_draft" in names
 

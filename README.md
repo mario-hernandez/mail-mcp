@@ -66,7 +66,7 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `send_email` | 🚀 | `MAIL_MCP_WRITE_ENABLED=true` + `MAIL_MCP_SEND_ENABLED=true` + `confirm=true` | Send via SMTP (rate-limited per account). Visible always; refuses to transmit until both env vars are set. |
 | `send_draft` | 🚀 | same as `send_email` | Send an existing draft and remove it from Drafts. |
 
-When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the **destructive write tools** (`copy_email`, `move_email`, `mark_emails`, `delete_emails`, folder ops) are not registered — the model cannot enumerate them. The **send tools** are registered always so the model sees they exist; calling them without the env-var gate returns `error.code = "SEND_NOT_ENABLED"` with a step-by-step remediation hint (env vars, config-file paths, restart). This trade-off — visibility for guidance, not capability — was added in v0.3.8 after agents started telling users "mail-mcp can't send email" instead of explaining the gate.
+When `MAIL_MCP_WRITE_ENABLED` is unset (the default), the **destructive write tools** (`copy_email`, `move_email`, `mark_emails`, `delete_emails`, folder ops) are not registered — the model cannot enumerate them. The **send tools** are registered always so the model sees they exist; calling them without the env-var gate returns `error.code = "SEND_NOT_ENABLED"` with a step-by-step remediation hint (env vars, config-file paths, restart). This trade-off — visibility for guidance, not capability — was added in v0.3.7 after agents started telling users "mail-mcp can't send email" instead of explaining the gate.
 
 ### Common flows (for LLMs)
 
