@@ -65,9 +65,17 @@ def test_delete_uids_permanent_uses_uid_expunge_under_uidplus():
     assert not client.expunge.called
 
 
-def test_delete_uids_permanent_raises_clear_error_without_uidplus():
-    """Refusing to expunge without UIDPLUS must surface a typed error."""
-    client = _client_with_caps(b"IMAP4rev1")
+def test_delete_uids_permanent_raises_without_mutation_when_uidplus_missing():
+    """No-UIDPLUS must fail BEFORE any \\Deleted flagging.
+
+    Pin Codex finding (medium): until v0.3.8 the handler set ``\\Deleted``
+    first and only then probed UIDPLUS, so a legacy server's failure path
+    still tombstoned the target UIDs. Some clients hide
+    ``\\Deleted``-flagged messages and a later EXPUNGE from any source
+    would finish the deletion. The probe is now BEFORE the flag — the
+    server state must be untouched on this failure.
+    """
+    client = _client_with_caps(b"IMAP4rev1")  # no UIDPLUS
     with pytest.raises(imap_client.UIDPlusRequired):
         imap_client.delete_uids(
             client,
@@ -76,9 +84,11 @@ def test_delete_uids_permanent_raises_clear_error_without_uidplus():
             trash_mailbox="Trash",
             permanent=True,
         )
-    # The \Deleted flag is set before the expunge attempt; the message
-    # still ends up tombstoned, just not blow-away-everything-flagged'd.
-    client.add_flags.assert_called_once_with([7], [b"\\Deleted"])
+    # The crucial assertion: NO mutation occurred. Pre-fix this assertion
+    # failed because the handler had already flagged the UID \Deleted.
+    assert not client.add_flags.called
+    assert not client.expunge.called
+    assert not client.uid_expunge.called
 
 
 def test_update_draft_helper_falls_back_to_mark_deleted_without_uidplus():

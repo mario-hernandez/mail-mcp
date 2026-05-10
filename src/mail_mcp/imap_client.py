@@ -878,6 +878,21 @@ def delete_uids(
         raise ValidationError(f"batch too large (max {MAX_BATCH_UIDS} uids)")
     if permanent:
         client.select_folder(mailbox, readonly=False)
+        # Probe UIDPLUS BEFORE flagging so a server without UIDPLUS produces
+        # a clean failure with no mutation. Until v0.3.8 we flagged the UIDs
+        # ``\\Deleted`` first and only then asked ``safe_uid_expunge`` to
+        # check the capability, which left the target UIDs tombstoned on a
+        # legacy server even when the call ultimately raised — a later
+        # expunge from any client could finish the job. The probe here
+        # makes the failure path rollback-safe.
+        if not _has_uidplus(client):
+            raise UIDPlusRequired(
+                "server does not advertise UIDPLUS, so EXPUNGE cannot be "
+                "scoped to specific UIDs without risking unrelated messages "
+                "another client has already flagged \\Deleted. No messages "
+                "were mutated. Move-to-trash (permanent=false) works without "
+                "UIDPLUS."
+            )
         client.add_flags(uids, [b"\\Deleted"])
         safe_uid_expunge(client, uids=uids)
         return len(uids)
