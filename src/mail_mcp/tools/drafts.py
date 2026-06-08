@@ -172,11 +172,22 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
+        # Default to a plain-text body. When preserving the original body
+        # (params.body is None), fall back through plain THEN html so an
+        # HTML-only draft (common from Outlook / Apple Mail / Thunderbird)
+        # keeps its content instead of being flattened to an empty text/plain
+        # part — append-then-delete would make that loss permanent.
+        new_body_subtype = "plain"
         if params.body is not None:
             new_body = params.body
         else:
-            new_body = original.get_body(preferencelist=("plain",))
-            new_body = new_body.get_content() if new_body else ""
+            preserved = original.get_body(preferencelist=("plain", "html"))
+            if preserved is not None:
+                new_body = preserved.get_content()
+                if preserved.get_content_subtype() == "html":
+                    new_body_subtype = "html"
+            else:
+                new_body = ""
         in_reply_to = params.in_reply_to if params.in_reply_to is not None else original.get("In-Reply-To")
         references = params.references if params.references is not None else (
             original.get("References", "").split() or None
@@ -193,6 +204,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             in_reply_to=in_reply_to,
             references=references,
             attachments=new_attachments,
+            body_subtype=new_body_subtype,
         )
         if params.attachments is None:
             # Preserve the original's attachments — caller did not opt in to
