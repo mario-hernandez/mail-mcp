@@ -9,6 +9,67 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.3.9] — 2026-05-27
+
+A focused release on one bug class: **response/reality drift** — a tool
+reporting a confident success while the underlying operation did less
+than the response implied. Triggered by a production report
+(`send_email` dropped attachments) and broadened by a 43-agent
+adversarial audit of the whole codebase that confirmed six siblings.
+
+### Fixed
+
+- **`send_email` silently dropped attachments.** It accepted
+  `attachments` in its schema but never resolved them or passed them to
+  the MIME builder, returning a success dict with a `message_id` while
+  delivering a single-part `text/plain` with no file. An agent believed
+  17 invoices had been sent; they arrived empty. `send_email` now
+  resolves attachments (after the gates / rate-limit), attaches them,
+  and echoes the actually-attached files in the response. A bad path
+  aborts the send instead of delivering nothing.
+- **SMTP partial delivery is no longer silent.**
+  `smtplib.SMTP.send_message` returns the refused-recipients dict
+  instead of raising when *some* recipients are accepted. `send()` now
+  raises `PartialDeliveryError` (classified as `error.code =
+  "PARTIAL_DELIVERY"`) so the send tools never report a clean
+  `message_id` while some recipients silently got nothing. The hint
+  warns the LLM not to blind-resend.
+- **SMTP / read-side recipient parsing uses `getaddresses`,** not a
+  naive `split(",")`. A display name containing a comma
+  (`"Doe, Jane" <jane@x>`) used to fragment into bogus envelope
+  recipients (relevant to `send_draft`, which sends externally-edited
+  drafts) and into fragmented `to`/`cc` handed to the LLM by
+  `get_email` / carried over by `update_draft`.
+- **`create_folder` reports `status` honestly** — `"created"` vs
+  `"already_exists"` — instead of always claiming a fresh creation on
+  its idempotent path.
+
+### Changed
+
+- **`mark_emails` rejects the no-op call.** A call with both
+  `mark_read` and `mark_flagged` unset used to round-trip to IMAP and
+  return `affected=len(uids)` for an operation that changed nothing. It
+  now fails at the schema boundary with a clear validation error.
+- **`save_draft` surfaces the dropped BCC.** BCC is still deliberately
+  not persisted on a draft (it breaks threading on some providers and
+  the user re-enters it at send time), but the schema field now
+  documents this and the response echoes a `bcc_dropped` note when BCC
+  is supplied, so a caller can't assume it was stored. `send_email`
+  still honours BCC as envelope recipients.
+
+### Notes
+
+- The adversarial audit rejected 17 further candidate findings as
+  not-real after independent verification (e.g. a claimed CRLF gap in
+  `escape_imap_quoted`, a claimed `env.from_[0]` IndexError — both
+  already mitigated).
+- One confirmed finding is **deferred to v0.4**: the OAuth
+  access-token cache / refresh-token rotation is not lock-guarded, so
+  concurrent same-alias refreshes could race and lose a rotated token.
+  It is a different bug class (auth concurrency), higher blast radius,
+  and is tracked alongside the other v0.4 concurrency items (send
+  rate-limiter lock).
+
 ## [0.3.8] — 2026-05-10
 
 ### Documentation

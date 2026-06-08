@@ -34,6 +34,28 @@ FWD_PREFIX = "Fwd: "
 MAX_QUOTED_LINES = 400
 
 
+class PartialDeliveryError(RuntimeError):
+    """Raised when SMTP accepted the message for some recipients but refused others.
+
+    ``smtplib.SMTP.send_message`` does not raise when at least one recipient
+    is accepted — it returns the refused ones. We turn that into an error so
+    the send tools never report a clean ``message_id`` while some recipients
+    silently received nothing. ``refused`` is the ``{addr: (code, msg)}`` dict
+    smtplib returns; ``message_id`` is the ID of the message that was (partly)
+    sent so the caller can locate it.
+    """
+
+    def __init__(self, message_id: str, refused: dict) -> None:
+        self.message_id = message_id
+        self.refused = refused
+        addrs = ", ".join(sorted(refused)) if refused else "(unknown)"
+        super().__init__(
+            f"message {message_id} was accepted for some recipients but the "
+            f"server refused: {addrs}. The message may have been delivered to "
+            "the others; do not retry blindly."
+        )
+
+
 def _has_rfc822_headers(inner: EmailMessage) -> bool:
     """Sanity check: a parsed candidate behaves like a real RFC822 message."""
     return any(inner.get(h) for h in ("From", "To", "Subject", "Date", "Message-ID"))
@@ -415,22 +437,33 @@ def send(
     message's ``Message-ID``.
     """
     ctx = create_tls_context()
+    # Extract envelope recipients with getaddresses, NOT a naive comma-split:
+    # a display name containing a comma (``"Smith, John" <john@x>``) would be
+    # fragmented into bogus recipients by ``split(",")``. Messages built by
+    # build_message join validated bare addresses, but send_draft re-sends a
+    # draft that may have been edited in a mail client with display names.
     recipients = [
-        *[a.strip() for a in msg.get("To", "").split(",") if a.strip()],
-        *[a.strip() for a in msg.get("Cc", "").split(",") if a.strip()],
-        *(bcc or []),
+        addr for _, addr in getaddresses([msg.get("To", ""), msg.get("Cc", "")]) if addr
     ]
+    recipients.extend(bcc or [])
     if account.smtp_starttls:
         with smtplib.SMTP(account.smtp_host, account.smtp_port, timeout=30) as server:
             server.ehlo()
             server.starttls(context=ctx)
             server.ehlo()
             _smtp_authenticate(server, account, credential)
-            server.send_message(msg, from_addr=account.email, to_addrs=recipients)
+            refused = server.send_message(msg, from_addr=account.email, to_addrs=recipients)
     else:
         with smtplib.SMTP_SSL(
             account.smtp_host, account.smtp_port, context=ctx, timeout=30
         ) as server:
             _smtp_authenticate(server, account, credential)
-            server.send_message(msg, from_addr=account.email, to_addrs=recipients)
+            refused = server.send_message(msg, from_addr=account.email, to_addrs=recipients)
+    # ``send_message`` returns a (possibly empty) dict of recipients the server
+    # refused. It does NOT raise when *some* recipients are accepted and others
+    # rejected — it just returns them here. Surfacing this prevents the
+    # send-path sibling of the silent-attachment-drop bug: reporting a
+    # message_id as full success while some recipients silently got nothing.
+    if refused:
+        raise PartialDeliveryError(msg["Message-ID"], refused)
     return msg["Message-ID"]

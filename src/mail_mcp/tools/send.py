@@ -25,6 +25,7 @@ from collections import defaultdict, deque
 from .. import smtp_client
 from ..config import Config
 from ..credentials import resolve_auth
+from ..safety.attachments import resolve_many
 from .schemas import SendEmailInput
 
 
@@ -106,6 +107,13 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
     acct = cfg.account(params.account)
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)
+    # Resolve attachments AFTER the enable/confirm gates and the rate-limit
+    # check: a rejected call should never touch disk, and a bad attachment
+    # path must abort the whole send (resolve_many raises ValidationError on
+    # a missing file or a path outside the allowlist) rather than silently
+    # delivering a message without the file — the failure mode that let an
+    # agent believe 17 invoices had been sent when they arrived empty.
+    attachments = resolve_many(params.attachments) if params.attachments else []
     msg, bcc = smtp_client.build_message_with_bcc(
         from_addr=acct.email,
         to=params.to,
@@ -115,6 +123,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         body_text=params.body,
         in_reply_to=params.in_reply_to,
         references=params.references,
+        attachments=attachments,
     )
     message_id = smtp_client.send(acct, creds, msg, bcc=bcc)
     return {
@@ -125,4 +134,10 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
             "cc": params.cc or [],
             "bcc": params.bcc or [],
         },
+        # Derived from the resolved attachments that were actually attached,
+        # not from the raw input — so the caller can verify what shipped.
+        "attachments": [
+            {"filename": a.filename, "size": a.size, "content_type": a.content_type}
+            for a in attachments
+        ],
     }

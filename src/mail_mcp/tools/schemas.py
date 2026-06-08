@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class _AccountScoped(BaseModel):
@@ -97,7 +97,18 @@ class SaveDraftInput(_AccountScoped):
     subject: str = Field(max_length=998)
     body: str = Field(max_length=200_000)
     cc: list[str] | None = None
-    bcc: list[str] | None = None
+    bcc: list[str] | None = Field(
+        default=None,
+        description=(
+            "Blind-carbon-copy recipients. NOTE: on the DRAFT tools "
+            "(save_draft / reply_draft / forward_draft) BCC is deliberately "
+            "NOT persisted — IMAP drafts with a Bcc header break threading on "
+            "some providers, and the user re-enters BCC in their mail client "
+            "at send time. The save_draft response echoes a 'bcc_dropped' note "
+            "when you pass it so this is visible. BCC IS honoured by send_email "
+            "(added as envelope recipients, never as a header)."
+        ),
+    )
     in_reply_to: str | None = None
     references: list[str] | None = None
     attachments: list[AttachmentSpec] | None = Field(
@@ -265,6 +276,19 @@ class MarkFlagsInput(_AccountScoped):
     uids: list[int] = Field(min_length=1, max_length=100)
     mark_read: bool | None = None
     mark_flagged: bool | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_flag(self) -> MarkFlagsInput:
+        # Reject the no-op call (both flags None) at the boundary instead of
+        # round-tripping to IMAP and returning a confident affected-count for
+        # an operation that changed nothing.
+        if self.mark_read is None and self.mark_flagged is None:
+            raise ValueError(
+                "mark_emails requires at least one of mark_read / mark_flagged "
+                "to be set (true to add the flag, false to clear it). Both "
+                "were omitted, which would be a no-op."
+            )
+        return self
 
 
 class CreateFolderInput(_AccountScoped):
