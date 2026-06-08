@@ -152,12 +152,18 @@ def build_message(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     attachments: list | None = None,
+    body_subtype: str = "plain",
 ) -> EmailMessage:
     """Assemble a safe RFC 5322 message.
 
     All header-destined fields pass through :func:`validate_header_value`, which
     rejects CR/LF and other control characters before :class:`EmailMessage`
     performs its own header validation.
+
+    ``body_subtype`` is the text subtype of the body part (``"plain"`` by
+    default; ``"html"`` to emit a ``text/html`` body). It exists so
+    ``update_draft`` can preserve an HTML-only draft's body instead of
+    silently flattening it to an empty text/plain part.
 
     BCC is handled separately by :func:`build_message_with_bcc`; the message
     returned here never carries a ``Bcc`` header.
@@ -189,7 +195,7 @@ def build_message(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = " ".join(references)
-    msg.set_content(body_text)
+    msg.set_content(body_text, subtype=body_subtype)
     _attach_files(msg, attachments or [])
     return msg
 

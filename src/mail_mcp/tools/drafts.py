@@ -172,11 +172,22 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
+        # Default to a plain-text body. When preserving the original body
+        # (params.body is None), fall back through plain THEN html so an
+        # HTML-only draft (common from Outlook / Apple Mail / Thunderbird)
+        # keeps its content instead of being flattened to an empty text/plain
+        # part — append-then-delete would make that loss permanent.
+        new_body_subtype = "plain"
         if params.body is not None:
             new_body = params.body
         else:
-            new_body = original.get_body(preferencelist=("plain",))
-            new_body = new_body.get_content() if new_body else ""
+            preserved = original.get_body(preferencelist=("plain", "html"))
+            if preserved is not None:
+                new_body = preserved.get_content()
+                if preserved.get_content_subtype() == "html":
+                    new_body_subtype = "html"
+            else:
+                new_body = ""
         in_reply_to = params.in_reply_to if params.in_reply_to is not None else original.get("In-Reply-To")
         references = params.references if params.references is not None else (
             original.get("References", "").split() or None
@@ -193,6 +204,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             in_reply_to=in_reply_to,
             references=references,
             attachments=new_attachments,
+            body_subtype=new_body_subtype,
         )
         if params.attachments is None:
             # Preserve the original's attachments — caller did not opt in to
@@ -276,6 +288,7 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 
     import email as _email
     import email.policy as _policy
+    from email.utils import getaddresses as _getaddresses
 
     acct = cfg.account(params.account)
     _check_rate_limit(acct.alias)
@@ -290,7 +303,17 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
         for hdr in ("X-Mozilla-Draft-Info", "X-Mozilla-Keys"):
             if hdr in msg:
                 del msg[hdr]
-        message_id = smtp_client.send(acct, creds, msg)
+        # A draft authored in a mail client (Outlook / Apple Mail / Thunderbird)
+        # can carry a Bcc header. If we left it on the message, send() would
+        # (a) NOT deliver to those recipients — it builds the envelope from
+        # To/Cc only — and (b) transmit the Bcc header to the To/Cc recipients,
+        # leaking the blind addresses. Extract the Bcc addresses, remove every
+        # Bcc header, and hand them to send() as true envelope BCC recipients.
+        bcc_recipients = [
+            addr for _n, addr in _getaddresses(msg.get_all("Bcc", [])) if addr
+        ]
+        del msg["Bcc"]
+        message_id = smtp_client.send(acct, creds, msg, bcc=bcc_recipients or None)
         warning = _delete_old_draft_uid_safely(
             c, mailbox=mailbox, uid=params.uid, trash_mailbox=acct.trash_mailbox,
         )
@@ -324,7 +347,7 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         drafts_mailbox, draft_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
         )
-    return {
+    response = {
         "account": acct.alias,
         "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
@@ -332,3 +355,13 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         "subject": msg.get("Subject"),
         "attached": "original message attached as message/rfc822",
     }
+    if params.bcc:
+        # BCC is not persisted on a draft (same as save_draft) — surface that
+        # rather than silently dropping it, so the caller knows to re-enter it
+        # at send time or use send_email.
+        response["bcc_dropped"] = list(params.bcc)
+        response["note"] = (
+            "BCC was not persisted on the forwarded draft (re-enter it at "
+            "send time). Use send_email if you need BCC delivered now."
+        )
+    return response

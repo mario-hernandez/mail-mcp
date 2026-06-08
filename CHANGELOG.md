@@ -9,6 +9,62 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.4.1] — 2026-05-27
+
+A final line-by-line adversarial audit of the whole codebase (one deep
+reader per file + cross-module finders, every finding independently
+verified) surfaced defects the earlier sampling audits had missed. This
+release fixes the three HIGH and five MEDIUM findings; the remaining
+low-severity items are batched for a follow-up.
+
+### Fixed — HIGH
+
+- **IMAP THREAD was permanently dead.** `thread_references` called
+  `client.thread("REFERENCES", "UTF-8", criteria)`, but imapclient's
+  signature is `thread(algorithm, criteria, charset)` — so `"UTF-8"`
+  landed in the criteria slot and the criteria list in charset. Every
+  server rejected it and the bare `except` degraded `get_thread` to a
+  lone-message singleton on **all** servers. Now called by keyword. (The
+  old test used a Mock with a fixed return value that ignored its
+  arguments, so the bug was invisible; the new test asserts the call
+  arguments.)
+- **`update_draft` destroyed HTML-only draft bodies.** When preserving
+  the body it used `get_body(preferencelist=("plain",))`, which returns
+  `None` for an HTML-only draft (Outlook / Apple Mail / Thunderbird),
+  flattening the body to `""`. Append-then-delete made the loss
+  permanent. It now falls back through `("plain","html")` and rebuilds
+  with the original content subtype (new `build_message(body_subtype=…)`
+  parameter, default `"plain"`).
+- **`list_folders` pattern was a CRLF IMAP-injection vector.** The
+  LLM-controlled `pattern` reached the IMAP LIST command with no
+  control-character guard. Now rejects CR/LF and control characters
+  (while still allowing the legitimate `*` / `%` wildcards).
+
+### Fixed — MEDIUM
+
+- **`get_email_raw` leaked attacker-controlled headers to the LLM.** The
+  XPIA header sanitizer only scrubbed a fixed lowercase key list, but
+  `get_email_raw`'s headers use RFC-capitalised keys — so Subject /
+  From / Reply-To / To / Cc reached the model unscrubbed. The sanitizer
+  now scrubs every string value regardless of key name (this also fixes
+  the previously-unscrubbed `date` field).
+- **Authorization-header redaction leaked the credential.** The pattern
+  stopped at the first space (`Authorization: Bearer …` only redacted
+  up to "Bearer"); it now consumes the rest of the line.
+- **`get_thread` kept the oldest messages and misreported the size.** It
+  truncated with `sorted(...)[:max]` (oldest first) and reported the
+  truncated count as `thread_size`. It now reports the true size, keeps
+  the **newest** messages, and notes when truncation happened.
+- **`send_draft` dropped and leaked a draft's Bcc.** An externally
+  authored draft can carry a Bcc header; the send path built the
+  envelope from To/Cc only, so the Bcc recipients got nothing while the
+  Bcc header was transmitted to the To/Cc recipients (exposing the blind
+  addresses). `send_draft` now extracts the Bcc addresses, strips every
+  Bcc header, and delivers them as true envelope BCC recipients.
+- **`forward_draft` silently dropped a supplied `bcc`.** It now mirrors
+  `save_draft` — surfaces `bcc_dropped` + an explanatory note (a draft
+  does not persist BCC).
+
 ## [0.4.0] — 2026-05-27
 
 Concurrency hardening — closes the two thread-safety races the v0.3.9

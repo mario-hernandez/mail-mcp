@@ -37,6 +37,8 @@ from .safety.validation import (
     ValidationError,
     clamp_int,
     escape_imap_quoted,
+    reject_control_chars,
+    reject_crlf,
     validate_header_value,
     validate_mailbox_name,
 )
@@ -145,6 +147,13 @@ def list_folders(
     including the hierarchy delimiter, ``%`` matches any characters except the
     delimiter. Defaults to ``*`` (everything).
     """
+    # The pattern is LLM-controlled and reaches the IMAP LIST command. We can't
+    # run validate_mailbox_name here (it rejects the legitimate * / % wildcards),
+    # but we MUST reject CR/LF and control characters or the pattern becomes a
+    # CRLF IMAP-injection vector. reject_control_chars / reject_crlf leave the
+    # wildcards untouched.
+    reject_crlf(pattern, field="pattern")
+    reject_control_chars(pattern, field="pattern")
     raw = (
         client.list_sub_folders(pattern=pattern)
         if subscribed_only
@@ -678,7 +687,12 @@ def thread_references(
 
     criteria = ["SINCE", _date.today() - timedelta(days=max(1, since_days))]
     try:
-        tree = client.thread("REFERENCES", "UTF-8", criteria)
+        # imapclient.thread signature is (algorithm, criteria, charset) — pass
+        # by keyword so the criteria list and charset can never be swapped
+        # again. The previous positional call ("REFERENCES", "UTF-8", criteria)
+        # put "UTF-8" in the criteria slot and the list in the charset slot, so
+        # every server rejected it and THREAD silently degraded to a singleton.
+        tree = client.thread(algorithm="REFERENCES", criteria=criteria, charset="UTF-8")
     except Exception:  # noqa: BLE001 — server may reject unsupported charset
         return []
     flat: list[list[int]] = []
