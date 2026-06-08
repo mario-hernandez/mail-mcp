@@ -288,6 +288,7 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 
     import email as _email
     import email.policy as _policy
+    from email.utils import getaddresses as _getaddresses
 
     acct = cfg.account(params.account)
     _check_rate_limit(acct.alias)
@@ -302,7 +303,17 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
         for hdr in ("X-Mozilla-Draft-Info", "X-Mozilla-Keys"):
             if hdr in msg:
                 del msg[hdr]
-        message_id = smtp_client.send(acct, creds, msg)
+        # A draft authored in a mail client (Outlook / Apple Mail / Thunderbird)
+        # can carry a Bcc header. If we left it on the message, send() would
+        # (a) NOT deliver to those recipients — it builds the envelope from
+        # To/Cc only — and (b) transmit the Bcc header to the To/Cc recipients,
+        # leaking the blind addresses. Extract the Bcc addresses, remove every
+        # Bcc header, and hand them to send() as true envelope BCC recipients.
+        bcc_recipients = [
+            addr for _n, addr in _getaddresses(msg.get_all("Bcc", [])) if addr
+        ]
+        del msg["Bcc"]
+        message_id = smtp_client.send(acct, creds, msg, bcc=bcc_recipients or None)
         warning = _delete_old_draft_uid_safely(
             c, mailbox=mailbox, uid=params.uid, trash_mailbox=acct.trash_mailbox,
         )
@@ -336,7 +347,7 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         drafts_mailbox, draft_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
         )
-    return {
+    response = {
         "account": acct.alias,
         "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
@@ -344,3 +355,13 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         "subject": msg.get("Subject"),
         "attached": "original message attached as message/rfc822",
     }
+    if params.bcc:
+        # BCC is not persisted on a draft (same as save_draft) — surface that
+        # rather than silently dropping it, so the caller knows to re-enter it
+        # at send time or use send_email.
+        response["bcc_dropped"] = list(params.bcc)
+        response["note"] = (
+            "BCC was not persisted on the forwarded draft (re-enter it at "
+            "send time). Use send_email if you need BCC delivered now."
+        )
+    return response

@@ -56,7 +56,12 @@ _SECRET_SEQUENCES = re.compile(
     # JWT/OAuth tokens are [A-Za-z0-9._\-]+; we require at least 8 chars to
     # avoid matching the literal word ``Bearer`` followed by an English word.
     r"|\bBearer\s+[A-Za-z0-9._\-]{8,}"
-    r"|\bAuthorization\s*:\s*\S+"
+    # Authorization header: consume the REST OF THE LINE after the colon, not
+    # just the scheme token. ``\S+`` stopped at the first space, so
+    # ``Authorization: Bearer eyJ...`` only redacted up to "Bearer" and leaked
+    # the credential blob (the bare-Bearer alt above only catches it when the
+    # scheme is literally "Bearer").
+    r"|\bAuthorization\s*:\s*\S[^\r\n]*"
     # key=value / key: value forms where the key is a secret label.
     r"|\b(?:pass(?:word)?|secret|token|bearer|api[_-]?key)\s*[:=]\s*\S+",
     re.IGNORECASE,

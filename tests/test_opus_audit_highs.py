@@ -24,7 +24,6 @@ import pytest
 from mail_mcp import imap_client
 from mail_mcp.safety.validation import ValidationError
 
-
 # ---------- HIGH #1: client.thread argument order ----------
 
 def test_thread_references_passes_correct_arguments():

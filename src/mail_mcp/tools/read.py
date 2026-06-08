@@ -38,17 +38,28 @@ def _resolve(cfg: Config, alias: str | None):
 def _sanitize_header_dict(header: dict) -> dict:
     """Apply ``sanitize_header`` to every attacker-controlled header value.
 
-    Subjects, addresses and filenames reach the LLM as plain text: a crafted
-    email could otherwise smuggle instructions that look like trusted system
-    prompts rather than untrusted payload.
+    Subjects, addresses, dates and filenames reach the LLM as plain text: a
+    crafted email could otherwise smuggle instructions that look like trusted
+    system prompts rather than untrusted payload.
+
+    Sanitises EVERY string value (and every string inside a list value),
+    regardless of key name, so it works for both the ``EmailHeader`` dicts
+    (``subject`` / ``from_`` / ``to`` / ``cc`` / ``date`` / ``flags``) and the
+    RFC-capitalised header dict that ``fetch_raw_message`` returns to
+    ``get_email_raw`` (``Subject`` / ``From`` / ``Reply-To`` / ``To`` / ``Cc``
+    / ``Date`` / …). A previous version only scrubbed a fixed lowercase key
+    list, so the capitalised keys reached the LLM unscrubbed and four bogus
+    empty fields were injected. Non-string values (``uid``, ``None``) pass
+    through unchanged.
     """
-    return {
-        **header,
-        "subject": sanitize_header(header.get("subject", "")),
-        "from_": sanitize_header(header.get("from_", "")),
-        "to": [sanitize_header(a) for a in header.get("to", [])],
-        "cc": [sanitize_header(a) for a in header.get("cc", [])],
-    }
+    def _clean(value):
+        if isinstance(value, str):
+            return sanitize_header(value)
+        if isinstance(value, list):
+            return [sanitize_header(x) if isinstance(x, str) else x for x in value]
+        return value
+
+    return {k: _clean(v) for k, v in header.items()}
 
 
 def _sanitize_attachment(att: dict) -> dict:
@@ -263,12 +274,22 @@ def get_thread(cfg: Config, params: GetThreadInput) -> dict:
             notes = ["server did not advertise THREAD=REFERENCES; returning the message alone"]
         else:
             notes = []
-        target = sorted(target)[: params.max_messages]
-        messages = imap_client.fetch_headers(c, mailbox=params.mailbox, uids=target)
+        ordered = sorted(target)  # ascending UID ≈ chronological
+        thread_size = len(ordered)  # the REAL size, before any truncation
+        if thread_size > params.max_messages:
+            # Keep the NEWEST messages (highest UIDs), not the oldest, and say
+            # so — the previous slice [:max] silently dropped the newest and
+            # then reported the truncated count as the thread size.
+            ordered = ordered[-params.max_messages:]
+            notes = notes + [
+                f"thread has {thread_size} messages; returning the newest "
+                f"{params.max_messages} (raise max_messages to see more)"
+            ]
+        messages = imap_client.fetch_headers(c, mailbox=params.mailbox, uids=ordered)
     return {
         "account": acct.alias,
         "mailbox": params.mailbox,
-        "thread_size": len(target),
+        "thread_size": thread_size,
         "returned": len(messages),
         "messages": [_sanitize_header_dict(m.__dict__) for m in messages],
         "notes": notes,
