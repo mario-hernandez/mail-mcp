@@ -36,8 +36,14 @@ def _auth(cfg: Config, alias: str | None):
 def create_folder(cfg: Config, params: CreateFolderInput) -> dict:
     acct, creds = _auth(cfg, params.account)
     with imap_client.connect(acct, creds) as c:
-        imap_client.create_folder(c, mailbox=params.mailbox)
-    return {"account": acct.alias, "mailbox": params.mailbox, "status": "created"}
+        created = imap_client.create_folder(c, mailbox=params.mailbox)
+    # Report what actually happened: the operation is idempotent, so report
+    # "already_exists" rather than always claiming a fresh creation.
+    return {
+        "account": acct.alias,
+        "mailbox": params.mailbox,
+        "status": "created" if created else "already_exists",
+    }
 
 
 def rename_folder(cfg: Config, params: RenameFolderInput) -> dict:

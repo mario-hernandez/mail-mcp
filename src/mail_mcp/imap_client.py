@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from email.message import EmailMessage
+from email.utils import getaddresses
 from html.parser import HTMLParser
 from typing import Any
 
@@ -511,8 +512,11 @@ def get_message(
         uid=int(uid),
         subject=msg.get("Subject", ""),
         from_=msg.get("From", ""),
-        to=[a.strip() for a in msg.get("To", "").split(",") if a.strip()],
-        cc=[a.strip() for a in msg.get("Cc", "").split(",") if a.strip()],
+        # Parse with getaddresses, not split(","): a display name containing a
+        # comma (``"Doe, Jane" <jane@x>``) would otherwise be fragmented into
+        # bogus addresses handed to the LLM.
+        to=_header_addresses(msg.get("To", "")),
+        cc=_header_addresses(msg.get("Cc", "")),
         date=msg.get("Date"),
         flags=[f.decode(errors="replace") for f in item.get(b"FLAGS", ())],
     )
@@ -748,12 +752,18 @@ def move_uids(
     return len(uids)
 
 
-def create_folder(client: IMAPClient, *, mailbox: str) -> None:
-    """Create an IMAP folder. Idempotent: succeeds if the folder already exists."""
+def create_folder(client: IMAPClient, *, mailbox: str) -> bool:
+    """Create an IMAP folder. Idempotent.
+
+    Returns ``True`` if a new folder was created, ``False`` if it already
+    existed — so the caller can report ``created`` vs ``already_exists``
+    honestly instead of always claiming a creation.
+    """
     validate_mailbox_name(mailbox)
     if client.folder_exists(mailbox):
-        return
+        return False
     client.create_folder(mailbox)
+    return True
 
 
 def rename_folder(client: IMAPClient, *, old_name: str, new_name: str) -> None:
@@ -906,6 +916,15 @@ def _decode(value: Any) -> str:
         except UnicodeDecodeError:
             return value.decode("latin-1", errors="replace")
     return str(value) if value is not None else ""
+
+
+def _header_addresses(raw: str) -> list[str]:
+    """Split an address header into bare addresses, comma-in-display-name safe.
+
+    ``"Doe, Jane" <jane@x>, bob@y`` → ``["jane@x", "bob@y"]`` — a naive
+    ``split(",")`` would wrongly yield ``['"Doe', 'Jane" <jane@x>', 'bob@y']``.
+    """
+    return [addr for _name, addr in getaddresses([raw or ""]) if addr]
 
 
 def _format_address(addr: Any) -> str:

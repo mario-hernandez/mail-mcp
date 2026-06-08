@@ -574,6 +574,16 @@ def _classify(exc: BaseException) -> dict[str, Any]:
             "Raise MAIL_MCP_SEND_HOURLY_LIMIT or wait ~1 hour."
         )
         retryable = True
+    elif cls == "PartialDeliveryError":
+        code = "PARTIAL_DELIVERY"
+        hint = (
+            "The SMTP server accepted the message for some recipients but "
+            "refused others. The message may already have been delivered to "
+            "the accepted recipients — do NOT blindly resend to everyone or "
+            "you will double-send. Tell the user which recipients were "
+            "refused (see the error message) and resend only to those after "
+            "fixing the addresses."
+        )
     elif cls == "SendDisabled":
         send_code = getattr(exc, "code", "SEND_NOT_ENABLED")
         if send_code == "SEND_REQUIRES_CONFIRM":

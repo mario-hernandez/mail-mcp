@@ -79,7 +79,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         drafts_mailbox, draft_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
         )
-    return {
+    response = {
         "account": acct.alias,
         "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
@@ -91,6 +91,15 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
             for a in attachments
         ],
     }
+    if params.bcc:
+        # BCC is intentionally not persisted on a draft (see above). Surface
+        # that explicitly so the caller never assumes the BCC was stored.
+        response["bcc_dropped"] = list(params.bcc)
+        response["note"] = (
+            "BCC was not persisted on the draft (re-enter it at send time). "
+            "Use send_email if you need BCC delivered now."
+        )
+    return response
 
 
 def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
@@ -154,11 +163,13 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         if params.to is not None:
             new_to = params.to
         else:
-            new_to = [a.strip() for a in original.get("To", "").split(",") if a.strip()]
+            # getaddresses, not split(","): preserve recipients whose display
+            # name contains a comma when carrying them over from the draft.
+            new_to = imap_client._header_addresses(original.get("To", ""))
         if params.cc is not None:
             new_cc = params.cc
         else:
-            extracted_cc = [a.strip() for a in original.get("Cc", "").split(",") if a.strip()]
+            extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
         if params.body is not None:

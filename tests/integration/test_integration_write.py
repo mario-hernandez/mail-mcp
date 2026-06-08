@@ -262,9 +262,10 @@ def test_create_folder_idempotent(cfg):
     first = organize.create_folder(cfg, CreateFolderInput(mailbox="TestFolder"))
     assert first["status"] == "created"
     # Second call must NOT raise — imap_client.create_folder short-circuits
-    # when the folder already exists.
+    # when the folder already exists — and now reports that honestly
+    # ("already_exists") instead of claiming a fresh creation.
     second = organize.create_folder(cfg, CreateFolderInput(mailbox="TestFolder"))
-    assert second["status"] == "created"
+    assert second["status"] == "already_exists"
 
 
 def test_rename_folder_happy_path(cfg):
