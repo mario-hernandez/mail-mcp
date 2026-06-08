@@ -573,7 +573,11 @@ def _classify(exc: BaseException) -> dict[str, Any]:
             "The per-account hourly send ceiling was reached. "
             "Raise MAIL_MCP_SEND_HOURLY_LIMIT or wait ~1 hour."
         )
-        retryable = True
+        # NOT retryable: the limit uses a sliding 1-hour window, so an
+        # immediate retry just re-trips it and burns another rejected
+        # attempt. An agent honouring retryable=True would busy-retry
+        # against its own hint to "wait ~1 hour".
+        retryable = False
     elif cls == "PartialDeliveryError":
         code = "PARTIAL_DELIVERY"
         hint = (
@@ -621,7 +625,7 @@ def _classify(exc: BaseException) -> dict[str, Any]:
             "certificate chain on the server side; mail-mcp does not offer "
             "a verification bypass."
         )
-    elif "timeout" in lower or cls in {"TimeoutError", "socket.timeout"}:
+    elif "timeout" in lower or cls == "TimeoutError":
         code = "TIMEOUT"
         hint = "The network call timed out. Retry; if it persists the server may be offline."
         retryable = True

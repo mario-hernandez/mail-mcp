@@ -29,11 +29,13 @@ Privacy and safety:
 
 from __future__ import annotations
 
+import re
 import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Literal
+from urllib.parse import quote
 from xml.etree import ElementTree as ET  # noqa: S405 — Element type only; parsing uses defusedxml
 
 import defusedxml.ElementTree as DET
@@ -43,6 +45,13 @@ from .safety.tls import create_tls_context
 from .safety.validation import validate_email_address
 
 Security = Literal["ssl", "starttls", "plain"]
+
+# Strict DNS hostname: dot-separated labels of [A-Za-z0-9-] (no leading/trailing
+# hyphen), at least two labels. Rejects '/', ':', '?', '#', '@', '..', etc. so a
+# crafted email domain cannot inject path/query into the autoconfig URLs.
+_DNS_HOSTNAME_RE = re.compile(
+    r"(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+"
+)
 
 
 @dataclass
@@ -149,6 +158,12 @@ def discover(email: str, *, timeout: float = 3.0, offline: bool = False) -> Disc
     """
     validate_email_address(email, field="email")
     domain = email.split("@", 1)[1].lower()
+    # validate_email_address guarantees one '@', a dot in the domain and no
+    # whitespace — but NOT the absence of URL-significant characters. A domain
+    # like ``evil.com/path`` or ``host:9999`` would otherwise be interpolated
+    # straight into the autoconfig URLs below. Require a strict DNS hostname.
+    if not _DNS_HOSTNAME_RE.fullmatch(domain):
+        raise DiscoveryError(f"email domain {domain!r} is not a valid hostname")
 
     if domain in _PROTON_DOMAINS:
         return Discovery(
@@ -169,9 +184,10 @@ def discover(email: str, *, timeout: float = 3.0, offline: bool = False) -> Disc
     if offline:
         raise DiscoveryError(f"no embedded preset for {domain!r} and offline=True")
 
+    email_q = quote(email, safe="")  # the full address is URL-significant
     for url in (
-        f"https://autoconfig.{domain}/mail/config-v1.1.xml?emailaddress={email}",
-        f"https://{domain}/.well-known/autoconfig/mail/config-v1.1.xml?emailaddress={email}",
+        f"https://autoconfig.{domain}/mail/config-v1.1.xml?emailaddress={email_q}",
+        f"https://{domain}/.well-known/autoconfig/mail/config-v1.1.xml?emailaddress={email_q}",
     ):
         spec = _fetch_autoconfig(url, timeout=timeout)
         if spec is not None:

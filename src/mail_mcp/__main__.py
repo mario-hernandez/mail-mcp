@@ -9,8 +9,25 @@ import sys
 
 from . import __version__
 from .config import AccountModel, ConfigModel, load, save
-from .keyring_store import get_password, set_password
+from .keyring_store import get_password, get_refresh_token, set_password
 from .server import run_stdio
+
+
+def _bool_arg(value: str) -> bool:
+    """Strict true/false parser for CLI flags.
+
+    The previous ``lambda v: v.lower() == "true"`` silently coerced any
+    unrecognised value (``"yes"``, ``"1"``, a typo) to ``False`` — which for
+    ``--smtp-starttls`` quietly disabled STARTTLS. Fail closed instead.
+    """
+    low = value.strip().lower()
+    if low in {"true", "yes", "1", "on"}:
+        return True
+    if low in {"false", "no", "0", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"expected a boolean (true/false), got {value!r}"
+    )
 
 
 def _cmd_serve(_args: argparse.Namespace) -> int:
@@ -40,7 +57,9 @@ def _cmd_add_account(args: argparse.Namespace) -> int:
     if not password:
         print("empty password; aborting.", file=sys.stderr)
         return 2
-    set_password(args.alias, args.email, password)
+    # Build and validate the account model BEFORE touching the keyring, so a
+    # bad host/port/alias fails without leaving an orphan secret the user
+    # can't see (the config is the only place that references the alias).
     account = AccountModel(
         alias=args.alias,
         email=args.email,
@@ -53,13 +72,29 @@ def _cmd_add_account(args: argparse.Namespace) -> int:
         drafts_mailbox=args.drafts_mailbox,
         trash_mailbox=args.trash_mailbox,
     )
+    # Snapshot any pre-existing secret for this alias/email so a failed save
+    # can be rolled back WITHOUT destroying a credential that was already
+    # there (overwrite-same-alias path) — only a brand-new entry is deleted.
+    try:
+        _prior_secret = get_password(args.alias, args.email)
+    except RuntimeError:
+        _prior_secret = None
+    set_password(args.alias, args.email, password)
     accounts = [a for a in cfg.model.accounts if a.alias != args.alias]
     accounts.append(account)
     cfg.model = ConfigModel(
         default_alias=cfg.model.default_alias or args.alias,
         accounts=accounts,
     )
-    save(cfg)
+    try:
+        save(cfg)
+    except Exception:
+        from .keyring_store import delete_password
+        if _prior_secret is not None:
+            set_password(args.alias, args.email, _prior_secret)  # restore
+        else:
+            delete_password(args.alias, args.email)  # remove the new orphan
+        raise
     print(f"account {args.alias!r} saved to {cfg.path}")
     return 0
 
@@ -79,8 +114,14 @@ def _cmd_list_accounts(_args: argparse.Namespace) -> int:
 def _cmd_check(args: argparse.Namespace) -> int:
     cfg = load()
     account = cfg.account(args.alias)
+    # OAuth accounts store a refresh token under a different keyring entry,
+    # not a password — checking get_password for them always failed. Branch
+    # on the auth kind, mirroring doctor.py's _keyring_status.
     try:
-        get_password(account.alias, account.email)
+        if account.auth == "oauth-microsoft":
+            get_refresh_token(account.alias)
+        else:
+            get_password(account.alias, account.email)
     except RuntimeError as exc:
         print(f"keyring check failed: {exc}", file=sys.stderr)
         return 3
@@ -129,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--imap-port", type=int, default=993)
     add.add_argument("--smtp-host", required=True)
     add.add_argument("--smtp-port", type=int, default=587)
-    add.add_argument("--smtp-starttls", type=lambda v: v.lower() == "true", default=True)
+    add.add_argument("--smtp-starttls", type=_bool_arg, default=True)
     add.add_argument("--drafts-mailbox", default="Drafts")
     add.add_argument("--trash-mailbox", default="Trash")
     add.set_defaults(func=_cmd_add_account)

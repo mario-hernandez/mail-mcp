@@ -19,7 +19,12 @@ from . import autoconfig, imap_client, smtp_client
 from .autoconfig import Discovery, DiscoveryError, ServerSpec
 from .config import AccountModel, ConfigModel, load, save
 from .credentials import AuthCredential
-from .keyring_store import set_password, set_refresh_token
+from .keyring_store import (
+    delete_password,
+    get_password,
+    set_password,
+    set_refresh_token,
+)
 from .safety.validation import validate_alias
 
 # Hostnames that identify a Microsoft 365 IMAP endpoint — used to offer the
@@ -126,7 +131,10 @@ def run() -> int:
     # mailboxes, so we detect that host and steer the user toward OAuth before
     # they type a password that won't work. Users can still decline if their
     # tenant has the legacy flag flipped.
-    is_m365 = disc.imap.host in _M365_IMAP_HOSTS
+    # Normalise the host for the comparison only — manual entry, autoconfig
+    # XML and SRV results can differ in casing or surrounding whitespace, and
+    # all should still steer the user toward OAuth.
+    is_m365 = disc.imap.host.strip().lower() in _M365_IMAP_HOSTS
     use_oauth = False
     if is_m365:
         use_oauth = _prompt_oauth_choice(questionary, console)
@@ -162,8 +170,14 @@ def run() -> int:
     password = questionary.password(
         "Password (stored in the OS keyring):",
     ).ask()
-    if not password:
+    if password is None:
+        # Ctrl-C / Esc — the user cancelled the prompt.
         return _cancelled(console)
+    if not password:
+        # Distinct from cancel: an empty string is an invalid password, not a
+        # cancellation. Say so instead of silently exiting as if cancelled.
+        console.print("[red]Password cannot be empty.[/red]")
+        return 1
 
     account = AccountModel(
         alias=alias,
@@ -202,6 +216,12 @@ def run() -> int:
             console.print("[yellow]discarded, nothing written.[/yellow]")
             return 1
 
+    # Snapshot any pre-existing secret (overwrite-same-alias path) so a failed
+    # config save restores it rather than destroying a working credential.
+    try:
+        _prior_secret = get_password(alias, email)
+    except RuntimeError:
+        _prior_secret = None
     set_password(alias, email, password)
     accounts = [a for a in cfg.model.accounts if a.alias != alias]
     accounts.append(account)
@@ -209,7 +229,18 @@ def run() -> int:
         default_alias=cfg.model.default_alias or alias,
         accounts=accounts,
     )
-    save(cfg)
+    try:
+        save(cfg)
+    except Exception:
+        # Roll back the keyring change: restore a pre-existing secret, or
+        # remove the brand-new orphan if there was none. The config is the
+        # only place that references the alias, so a half-written state would
+        # otherwise leave a credential the user can't see.
+        if _prior_secret is not None:
+            set_password(alias, email, _prior_secret)
+        else:
+            delete_password(alias, email)
+        raise
 
     console.print()
     console.print(

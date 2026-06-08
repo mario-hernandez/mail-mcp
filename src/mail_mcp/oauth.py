@@ -32,6 +32,7 @@ first use, not at import time — so password-only users never trip over it.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -129,10 +130,23 @@ def _require_msal() -> Any:
     return msal
 
 
+# A tenant is a GUID, a verified-domain hostname, or one of Microsoft's
+# special endpoints. Anything with a slash / '@' / '?' / '#' / '..' could
+# rewrite the authority URL path, so reject it rather than interpolate blindly.
+_TENANT_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|common|organizations|consumers"
+    r"|(?!-)[A-Za-z0-9-]{1,63}(?<!-)(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+"
+)
+
+
 def _authority(tenant: str) -> str:
-    if not tenant or any(c.isspace() for c in tenant):
-        raise OAuthError("oauth_tenant must be a tenant GUID, verified domain, or 'common'")
-    return f"https://login.microsoftonline.com/{tenant}"
+    if not tenant or not _TENANT_RE.fullmatch(tenant.strip()):
+        raise OAuthError(
+            "oauth_tenant must be a tenant GUID, a verified domain, or one of "
+            "'common' / 'organizations' / 'consumers'"
+        )
+    return f"https://login.microsoftonline.com/{tenant.strip()}"
 
 
 def _public_client(client_id: str, tenant: str) -> Any:

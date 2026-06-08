@@ -74,7 +74,28 @@ def _attach_files(msg: EmailMessage, resolved_attachments: list) -> None:
     RFC822 message we fall back to ``application/octet-stream`` so the
     bytes at least survive end-to-end.
     """
+    from .safety.attachments import MAX_ATTACHMENT_BYTES, MAX_TOTAL_ATTACHMENT_BYTES
+    from .safety.validation import ValidationError as _ValidationError
+
+    running_total = 0
     for att in resolved_attachments or []:
+        # Re-check the size at read time: resolve() stat'd the file earlier,
+        # but it could have grown since (TOCTOU). Enforce BOTH the per-file
+        # and the aggregate cap here — resolve_many's totals were computed
+        # against the pre-growth sizes — so a set of files each growing to
+        # just under the per-file cap can't blow past the total in memory.
+        current_size = att.path.stat().st_size
+        if current_size > MAX_ATTACHMENT_BYTES:
+            raise _ValidationError(
+                f"attachment grew past the size cap before send: "
+                f"{current_size} bytes (max {MAX_ATTACHMENT_BYTES})"
+            )
+        running_total += current_size
+        if running_total > MAX_TOTAL_ATTACHMENT_BYTES:
+            raise _ValidationError(
+                f"attachments grew past the total size limit before send: "
+                f"{running_total} bytes (max {MAX_TOTAL_ATTACHMENT_BYTES})"
+            )
         data = att.path.read_bytes()
         maintype, _, subtype = att.content_type.partition("/")
         if not subtype:
