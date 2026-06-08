@@ -259,7 +259,7 @@ git clone https://github.com/mario-hernandez/mail-mcp
 cd mail-mcp
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest         # 273 tests covering the safety boundaries
+pytest         # 290 tests covering the safety boundaries
 ruff check src tests
 ```
 
