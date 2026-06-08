@@ -84,6 +84,12 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
         "message_id": msg["Message-ID"],
+        # Derived from the resolved attachments actually attached, not the
+        # raw input — mirrors send_email so a caller can verify what shipped.
+        "attachments": [
+            {"filename": a.filename, "size": a.size, "content_type": a.content_type}
+            for a in attachments
+        ],
     }
 
 
