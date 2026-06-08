@@ -9,6 +9,54 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.4.0] — 2026-05-27
+
+Concurrency hardening — closes the two thread-safety races the v0.3.9
+audit confirmed and deferred. Handlers run on a thread pool
+(`asyncio.to_thread`), so module-global state was reachable by
+concurrent same-account calls. Designed and verified through two
+adversarial review rounds (a design panel and a diff-attack panel);
+no residual race or deadlock survived.
+
+### Fixed
+
+- **OAuth refresh-token rotation race.** Two concurrent tool calls on
+  the same OAuth account could both miss the access-token cache and
+  both consume the same refresh token. Because Microsoft silently
+  rotates refresh tokens, the loser of that race could persist or
+  delete the wrong one, forcing a needless re-login. `resolve_auth`
+  now serialises the refresh per alias: a warm-cache hit stays on a
+  fast path outside the lock, and on a miss it takes a per-alias
+  `threading.Lock` and double-checks the cache before refreshing (a
+  thread parked on the lock during another's refresh returns the
+  freshly-cached token instead of refreshing again). Different
+  accounts use different locks and never block each other. The lock
+  registry (`oauth._get_alias_lock`) is itself created race-free via
+  double-checked locking.
+- **Send rate-limiter race.** `_check_rate_limit` did prune→check→append
+  on a shared deque with no lock, so N concurrent same-account sends
+  could all observe a sub-limit bucket and all append, exceeding the
+  hourly cap that bounds prompt-injection blast radius. The sequence
+  is now guarded by a module-global lock (microsecond critical
+  section, no I/O).
+
+### Notes
+
+- Lock ordering is acyclic and never nested in practice: the
+  rate-limit lock is released before `resolve_auth` is called, the
+  registry guard is released before the per-alias lock is taken, and
+  the per-alias lock is a leaf. Plain `Lock` (not `RLock`): the
+  critical section never re-enters itself.
+- The per-alias OAuth lock is intentionally held across the MSAL
+  network call — that is what guarantees exactly one thread consumes
+  the rotating refresh token. A slow refresh on one account never
+  blocks another.
+- New deterministic concurrency tests (barrier-driven,
+  parametrized-repeated to force the windows; includes a control test
+  that bypasses the lock and proves the race reappears, and the
+  transient-error-under-contention path). No public signatures or
+  error messages changed.
+
 ## [0.3.9] — 2026-05-27
 
 A focused release on one bug class: **response/reality drift** — a tool
