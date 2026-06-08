@@ -39,7 +39,7 @@ Examples of unacceptable behaviour:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behaviour may be
-reported to the maintainer at `m@mariohernandez.es`. All complaints will be
+reported to the maintainer at `developer@supera.dev`. All complaints will be
 reviewed and investigated promptly and fairly.
 
 Maintainers are obligated to respect the privacy and security of the reporter

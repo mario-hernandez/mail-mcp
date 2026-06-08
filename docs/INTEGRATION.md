@@ -33,7 +33,7 @@ Take note of the absolute path returned by `which` — the MCP clients below nee
 The `add-account` command asks for the password interactively and stores it in the OS keyring (macOS Keychain / Linux Secret Service / Windows Credential Manager). Nothing secret is written to the project's config file.
 
 ```bash
-mail-mcp add-account personal m@mariohernandez.es \
+mail-mcp add-account personal you@example.com \
   --imap-host imap.ionos.es --imap-port 993 \
   --smtp-host smtp.ionos.es --smtp-port 587
 ```

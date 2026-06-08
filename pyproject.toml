@@ -9,7 +9,7 @@ description = "A privacy-first IMAP/SMTP MCP server for Claude Desktop, Claude C
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Mario Hernández", email = "m@mariohernandez.es" }]
+authors = [{ name = "Mario Hernández", email = "developer@supera.dev" }]
 keywords = ["mcp", "imap", "smtp", "email", "claude", "codex", "keychain"]
 classifiers = [
     "Development Status :: 4 - Beta",
