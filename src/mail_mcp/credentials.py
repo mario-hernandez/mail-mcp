@@ -57,50 +57,66 @@ def resolve_auth(account: AccountModel) -> AuthCredential:
     if account.auth == "oauth-microsoft":
         from . import oauth  # local import so password users never load msal
 
+        # Fast path, OUTSIDE the lock: a warm cache hit is the overwhelming
+        # majority of calls and must never serialise on the per-alias lock.
         cached = oauth.get_cached_access_token(account.alias)
         if cached is not None:
             return AuthCredential(kind="oauth2", username=account.email, secret=cached)
 
+        # Config validation needs no shared state — fail fast before locking.
         if not account.oauth_client_id or not account.oauth_tenant:
             raise RuntimeError(
                 f"account {account.alias!r} is configured for OAuth but missing "
                 "oauth_client_id or oauth_tenant; re-run `mail-mcp init`."
             )
 
-        try:
-            refresh = keyring_store.get_refresh_token(account.alias)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                f"no refresh token stored for {account.alias!r}; re-run `mail-mcp init` "
-                "to sign in again."
-            ) from exc
+        # Slow path: serialise refreshes per alias so two concurrent callers
+        # cannot both consume the same (rotating) refresh token. The lock is
+        # held across the MSAL network call deliberately — that is what makes
+        # exactly one thread perform the refresh; a different alias uses a
+        # different lock and is never blocked.
+        with oauth._get_alias_lock(account.alias):
+            # Double-checked: a thread that was parked here while another
+            # refreshed must NOT refresh again — re-read the cache first.
+            cached = oauth.get_cached_access_token(account.alias)
+            if cached is not None:
+                return AuthCredential(kind="oauth2", username=account.email, secret=cached)
 
-        try:
-            bundle = oauth.acquire_token_by_refresh_token(
-                refresh_token=refresh,
-                client_id=account.oauth_client_id,
-                tenant=account.oauth_tenant,
-            )
-        except oauth.OAuthError as exc:
-            # ``invalid_grant`` from Microsoft means the stored refresh token is
-            # no longer usable (revoked, password rotated, conditional-access
-            # policy tripped). Leaving it in the keyring would loop the user
-            # through the same failure on every call; discard it so the next
-            # ``mail-mcp init`` run starts clean.
-            if getattr(exc, "code", None) == "invalid_grant":
-                keyring_store.delete_refresh_token(account.alias)
-                oauth.clear_cache(account.alias)
+            try:
+                refresh = keyring_store.get_refresh_token(account.alias)
+            except RuntimeError as exc:
                 raise RuntimeError(
-                    f"refresh token for {account.alias!r} is no longer valid "
-                    "(revoked or expired). The stored token has been removed; "
-                    "re-run `mail-mcp init` to sign in again."
+                    f"no refresh token stored for {account.alias!r}; re-run `mail-mcp init` "
+                    "to sign in again."
                 ) from exc
-            raise
-        oauth.cache_access_token(account.alias, bundle)
-        if bundle.refresh_token and bundle.refresh_token != refresh:
-            # Microsoft rotated the refresh token — persist the new one so
-            # we don't fall back to the revoked one next time.
-            keyring_store.set_refresh_token(account.alias, bundle.refresh_token)
-        return AuthCredential(kind="oauth2", username=account.email, secret=bundle.access_token)
+
+            try:
+                bundle = oauth.acquire_token_by_refresh_token(
+                    refresh_token=refresh,
+                    client_id=account.oauth_client_id,
+                    tenant=account.oauth_tenant,
+                )
+            except oauth.OAuthError as exc:
+                # ``invalid_grant`` from Microsoft means the stored refresh token is
+                # no longer usable (revoked, password rotated, conditional-access
+                # policy tripped). Leaving it in the keyring would loop the user
+                # through the same failure on every call; discard it so the next
+                # ``mail-mcp init`` run starts clean.
+                if getattr(exc, "code", None) == "invalid_grant":
+                    keyring_store.delete_refresh_token(account.alias)
+                    oauth.clear_cache(account.alias)
+                    raise RuntimeError(
+                        f"refresh token for {account.alias!r} is no longer valid "
+                        "(revoked or expired). The stored token has been removed; "
+                        "re-run `mail-mcp init` to sign in again."
+                    ) from exc
+                raise
+            oauth.cache_access_token(account.alias, bundle)
+            if bundle.refresh_token and bundle.refresh_token != refresh:
+                # Microsoft rotated the refresh token — persist the new one so
+                # we don't fall back to the revoked one next time.
+                keyring_store.set_refresh_token(account.alias, bundle.refresh_token)
+            secret = bundle.access_token
+        return AuthCredential(kind="oauth2", username=account.email, secret=secret)
 
     raise RuntimeError(f"unknown auth kind {account.auth!r} for account {account.alias!r}")

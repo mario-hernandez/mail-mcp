@@ -19,6 +19,7 @@ their choice in a single turn. Four gates defend against that:
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -54,6 +55,13 @@ class RateLimited(RuntimeError):
 _WINDOW_SECONDS = 3600.0
 _DEFAULT_LIMIT = 10
 _send_history: dict[str, deque[float]] = defaultdict(deque)
+# Guards the prune→check→append sequence below. Handlers run on a thread pool
+# (``asyncio.to_thread``), so without this lock N concurrent same-alias sends
+# could all observe a sub-limit bucket length and all append, blowing past the
+# hourly cap that bounds prompt-injection blast radius. A single global lock is
+# enough: the critical section is microseconds of pure deque work with no I/O,
+# and it also makes the ``defaultdict`` auto-vivification of a new alias safe.
+_RATE_LIMIT_LOCK = threading.Lock()
 
 
 def is_enabled() -> bool:
@@ -74,18 +82,19 @@ def _hourly_limit() -> int:
 
 
 def _check_rate_limit(alias: str) -> None:
-    limit = _hourly_limit()
-    bucket = _send_history[alias]
-    now = time.monotonic()
-    cutoff = now - _WINDOW_SECONDS
-    while bucket and bucket[0] < cutoff:
-        bucket.popleft()
-    if len(bucket) >= limit:
-        raise RateLimited(
-            f"send_email rate limit reached ({limit}/hour for '{alias}'). "
-            "Raise MAIL_MCP_SEND_HOURLY_LIMIT or wait for the oldest entry to expire."
-        )
-    bucket.append(now)
+    limit = _hourly_limit()  # env read — no shared state, fine outside the lock
+    with _RATE_LIMIT_LOCK:
+        bucket = _send_history[alias]
+        now = time.monotonic()
+        cutoff = now - _WINDOW_SECONDS
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            raise RateLimited(
+                f"send_email rate limit reached ({limit}/hour for '{alias}'). "
+                "Raise MAIL_MCP_SEND_HOURLY_LIMIT or wait for the oldest entry to expire."
+            )
+        bucket.append(now)
 
 
 def _reset_for_tests() -> None:

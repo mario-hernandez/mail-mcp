@@ -32,6 +32,7 @@ first use, not at import time — so password-only users never trip over it.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -52,6 +53,37 @@ _EXPIRY_SKEW_SECONDS = 60
 # Process-local cache. Key: account alias. Value: (access_token, expires_at).
 # Refresh tokens never live here; they stay in the OS keyring.
 _TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+
+# Per-alias locks serialising the OAuth refresh critical section in
+# ``credentials.resolve_auth``. Handlers run on a thread pool
+# (``asyncio.to_thread``), so two concurrent calls on the same account could
+# otherwise both see a cache miss and both consume the same refresh token —
+# and Microsoft silently rotates refresh tokens, so the loser of that race
+# would persist or delete the wrong one. A per-alias lock means a slow
+# refresh on account A never blocks account B, while same-alias refreshes are
+# strictly serialised. The registry itself is guarded so creating the lock
+# for a new alias is not itself a race.
+_ALIAS_LOCKS: dict[str, threading.Lock] = {}
+_ALIAS_LOCKS_GUARD = threading.Lock()
+
+
+def _get_alias_lock(alias: str) -> threading.Lock:
+    """Return (creating if needed) the per-alias OAuth refresh lock.
+
+    Double-checked: the fast path is a plain dict read (atomic under the GIL),
+    so concurrent calls on different aliases never contend on the guard. The
+    guard is taken only the first time an alias is seen, held for the
+    microseconds of one dict insert, and never held across the lock it creates.
+    """
+    lock = _ALIAS_LOCKS.get(alias)
+    if lock is not None:
+        return lock
+    with _ALIAS_LOCKS_GUARD:
+        lock = _ALIAS_LOCKS.get(alias)
+        if lock is None:
+            lock = threading.Lock()
+            _ALIAS_LOCKS[alias] = lock
+        return lock
 
 
 class OAuthNotInstalled(RuntimeError):
