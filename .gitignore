@@ -17,3 +17,6 @@ docs/images/*.png.bak
 research/
 docs/V021_PLAN.md
 
+
+# Scratch bug reports handed in by users — not part of the package
+BUG_*.md
