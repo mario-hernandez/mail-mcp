@@ -303,6 +303,16 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
         for hdr in ("X-Mozilla-Draft-Info", "X-Mozilla-Keys"):
             if hdr in msg:
                 del msg[hdr]
+        # A draft authored without a Message-ID (some clients add it only at
+        # send time) would make send() return message_id=None. Inject one so
+        # the response and threading always carry a real ID. ``del`` first:
+        # it is a no-op when the header is absent, and clears a PRESENT-BUT-
+        # EMPTY ``Message-ID:`` header — without it, assigning a second
+        # Message-ID raises ValueError ("at most 1 Message-ID headers").
+        if not msg.get("Message-ID"):
+            from email.utils import make_msgid as _make_msgid
+            del msg["Message-ID"]
+            msg["Message-ID"] = _make_msgid(domain=acct.email.rsplit("@", 1)[1])
         # A draft authored in a mail client (Outlook / Apple Mail / Thunderbird)
         # can carry a Bcc header. If we left it on the message, send() would
         # (a) NOT deliver to those recipients — it builds the envelope from

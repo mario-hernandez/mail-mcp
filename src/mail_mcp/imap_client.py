@@ -36,7 +36,6 @@ from .safety.tls import create_tls_context
 from .safety.validation import (
     ValidationError,
     clamp_int,
-    escape_imap_quoted,
     reject_control_chars,
     reject_crlf,
     validate_header_value,
@@ -380,18 +379,24 @@ def _build_criteria(
         criteria.append("FLAGGED")
     elif flagged is False:
         criteria.append("UNFLAGGED")
+    # NOTE: do NOT pre-escape these values. imapclient quotes/escapes each
+    # criterion itself (_quoted.maybe), so calling escape_imap_quoted here
+    # double-escaped backslashes and quotes — a search for `he"llo` was sent
+    # as a search for `he\"llo`. validate_header_value still runs to reject
+    # CRLF / control characters and cap length; the single, correct quoting
+    # is left to imapclient.
     if from_:
         validate_header_value(from_, field="from")
-        criteria.extend(["FROM", escape_imap_quoted(from_)])
+        criteria.extend(["FROM", from_])
     if to:
         validate_header_value(to, field="to")
-        criteria.extend(["TO", escape_imap_quoted(to)])
+        criteria.extend(["TO", to])
     if subject:
         validate_header_value(subject, field="subject")
-        criteria.extend(["SUBJECT", escape_imap_quoted(subject)])
+        criteria.extend(["SUBJECT", subject])
     if body_contains:
         validate_header_value(body_contains, field="body_contains", max_length=2000)
-        criteria.extend(["BODY", escape_imap_quoted(body_contains)])
+        criteria.extend(["BODY", body_contains])
     if since:
         criteria.extend(["SINCE", since])
     if before:
@@ -451,8 +456,10 @@ def search(
         flags = [f.decode(errors="replace") for f in item.get(b"FLAGS", ())]
         subject_val = _decode(env.subject) if env and env.subject else ""
         from_val = _format_address(env.from_[0]) if env and env.from_ else ""
-        to_val = [_format_address(a) for a in (env.to or [])] if env else []
-        cc_val = [_format_address(a) for a in (env.cc or [])] if env else []
+        # Filter out the empties that _format_address returns for RFC 3501
+        # address-group markers, so the LLM never sees a bogus/blank recipient.
+        to_val = [a for a in (_format_address(x) for x in (env.to or [])) if a] if env else []
+        cc_val = [a for a in (_format_address(x) for x in (env.cc or [])) if a] if env else []
         date_val = item.get(b"INTERNALDATE")
         headers.append(
             EmailHeader(
@@ -731,8 +738,10 @@ def fetch_headers(
         flags = [f.decode(errors="replace") for f in item.get(b"FLAGS", ())]
         subject_val = _decode(env.subject) if env and env.subject else ""
         from_val = _format_address(env.from_[0]) if env and env.from_ else ""
-        to_val = [_format_address(a) for a in (env.to or [])] if env else []
-        cc_val = [_format_address(a) for a in (env.cc or [])] if env else []
+        # Filter out the empties that _format_address returns for RFC 3501
+        # address-group markers, so the LLM never sees a bogus/blank recipient.
+        to_val = [a for a in (_format_address(x) for x in (env.to or [])) if a] if env else []
+        cc_val = [a for a in (_format_address(x) for x in (env.cc or [])) if a] if env else []
         date_val = item.get(b"INTERNALDATE")
         out.append(
             EmailHeader(
@@ -895,12 +904,14 @@ def delete_uids(
     :class:`UIDPlusRequired` and fall back to mark-deleted-without-expunge.
     """
     validate_mailbox_name(mailbox)
-    validate_mailbox_name(trash_mailbox)
     if not uids:
         return 0
     if len(uids) > MAX_BATCH_UIDS:
         raise ValidationError(f"batch too large (max {MAX_BATCH_UIDS} uids)")
     if permanent:
+        # trash_mailbox is irrelevant to a permanent expunge — only validate
+        # it on the move-to-trash path, so a permanent delete is not blocked
+        # by an empty or unconfigured trash mailbox name.
         client.select_folder(mailbox, readonly=False)
         # Probe UIDPLUS BEFORE flagging so a server without UIDPLUS produces
         # a clean failure with no mutation. Until v0.3.7 we flagged the UIDs
@@ -920,6 +931,7 @@ def delete_uids(
         client.add_flags(uids, [b"\\Deleted"])
         safe_uid_expunge(client, uids=uids)
         return len(uids)
+    validate_mailbox_name(trash_mailbox)
     return move_uids(client, source=mailbox, destination=trash_mailbox, uids=uids)
 
 
@@ -944,8 +956,16 @@ def _header_addresses(raw: str) -> list[str]:
 def _format_address(addr: Any) -> str:
     if addr is None:
         return ""
+    # RFC 3501 ENVELOPE encodes address-group syntax with sentinel Address
+    # tuples (imapclient response_types.py): a group START has a mailbox (the
+    # group NAME, not a localpart) with host=None, and a group END has both
+    # mailbox=None and host=None. Neither is a real address — emitting the
+    # group label or an empty string would mislead the LLM about who the
+    # recipients are. Skip both; callers filter out the empty result.
+    if not addr.host:
+        return ""
     mailbox = _decode(addr.mailbox) if addr.mailbox else ""
-    host = _decode(addr.host) if addr.host else ""
+    host = _decode(addr.host)
     name = _decode(addr.name) if addr.name else ""
     email_repr = f"{mailbox}@{host}" if mailbox and host else mailbox or host
     return f"{name} <{email_repr}>".strip() if name else email_repr
@@ -976,13 +996,15 @@ class _HTMLTextExtractor(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
-        elif tag == "br":
+        elif tag == "br" and not self._skip_depth:
+            # Mirror handle_data: a <br> inside <script>/<style>/<head>/<title>
+            # must not leak a stray newline into the rendered text.
             self._buf.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
-        elif tag in self._BLOCK_TAGS:
+        elif tag in self._BLOCK_TAGS and not self._skip_depth:
             self._buf.append("\n")
 
     def handle_data(self, data: str) -> None:

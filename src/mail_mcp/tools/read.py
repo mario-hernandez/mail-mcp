@@ -6,6 +6,7 @@ attacker cannot smuggle instructions through the email content.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -154,10 +155,14 @@ def get_email_raw(cfg: Config, params: GetEmailRawInput) -> dict:
     rendered_bytes = raw[: params.max_bytes] if truncated else raw
     rendered = rendered_bytes.decode("utf-8", errors="replace")
     root: Path = default_download_root()
+    # Include a sanitised mailbox component: the same UID exists in different
+    # mailboxes, so "raw-uid-<uid>.eml" alone would silently overwrite a
+    # previously saved message from another folder.
+    mailbox_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", params.mailbox).strip("_") or "mailbox"
     target = prepare_download_path(
         root,
         acct.alias,
-        f"raw-uid-{params.uid}.eml",
+        f"raw-{mailbox_slug}-uid-{params.uid}.eml",
     )
     target.write_bytes(raw)
     target.chmod(0o600)

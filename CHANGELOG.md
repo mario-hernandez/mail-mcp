@@ -9,6 +9,63 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.4.2] — 2026-05-27
+
+Closes the 17 remaining low-severity findings from the final Opus
+line-by-line audit, so no audit finding is left open. The fix batch
+then went through its own adversarial verification pass, which caught a
+regression in one of the fixes (now resolved) before merge.
+
+### Fixed
+
+- **`get_thread`/`search` no longer surface bogus recipients.**
+  `_format_address` now returns empty for RFC 3501 address-group
+  START/END markers (group label / NIL host), and the callers filter
+  the empties — so a `To: undisclosed-recipients:;` message no longer
+  shows the group label as if it were a recipient.
+- **IMAP search no longer double-escapes.** `_build_criteria` passed
+  FROM/TO/SUBJECT/BODY through `escape_imap_quoted` AND then imapclient
+  quoted them again, corrupting any search for a value containing a
+  quote or backslash. The values are now passed raw (imapclient quotes
+  once); `validate_header_value` still rejects CR/LF and control chars.
+- **`send_draft` injects a Message-ID** when the parsed draft lacks one
+  (previously `send()` could return `message_id=None`). The injection
+  also clears a present-but-empty `Message-ID:` header first — without
+  that, assigning the new ID raised `ValueError` (a regression the
+  verification pass caught).
+- **Permanent delete is no longer blocked by an empty trash mailbox.**
+  `delete_uids` only validates `trash_mailbox` on the move-to-trash
+  path; a permanent expunge never touches it.
+- **`get_email_raw` `.eml` filenames include a mailbox slug**, so the
+  same UID in different mailboxes no longer overwrites a prior save.
+- **HTML→text renderer** no longer emits a stray newline for a `<br>`
+  inside `<script>`/`<style>`/`<head>`/`<title>`.
+- **`mail-mcp check` works for OAuth accounts** — it now looks up the
+  refresh token for `oauth-microsoft` accounts instead of always
+  failing on a missing password.
+
+### Security / hardening
+
+- **`oauth_tenant` is validated** before interpolation into the
+  authority URL (GUID / verified domain / `common`|`organizations`|
+  `consumers`; slashes, `@`, `?`, `#`, whitespace rejected).
+- **Autoconfig domain is validated as a strict DNS hostname** and the
+  email is percent-encoded before being placed in the autoconfig URL,
+  closing a path/query-injection surface.
+- **Attachment size is re-checked at send time** (per-file *and*
+  aggregate caps), closing a TOCTOU where a file grew after the initial
+  stat.
+- **`--smtp-starttls` uses a strict boolean parser** — an unrecognised
+  value now fails closed instead of silently disabling STARTTLS.
+- **`add-account` / `mail-mcp init` validate the account model before
+  writing the keyring** and roll the keyring back on a failed config
+  save (restoring a pre-existing secret on the overwrite path rather
+  than deleting it), so a partial failure never orphans or destroys a
+  credential.
+- **`RATE_LIMITED` errors are no longer marked `retryable`** — the
+  sliding-window ceiling does not clear on an immediate retry, so the
+  flag would have driven agents to busy-retry against their own hint.
+
 ## [0.4.1] — 2026-05-27
 
 A final line-by-line adversarial audit of the whole codebase (one deep
