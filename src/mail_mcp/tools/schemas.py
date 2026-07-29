@@ -96,6 +96,18 @@ class SaveDraftInput(_AccountScoped):
     to: list[str] = Field(min_length=1, max_length=50)
     subject: str = Field(max_length=998)
     body: str = Field(max_length=200_000)
+    body_html: str | None = Field(
+        default=None,
+        max_length=500_000,
+        description=(
+            "HTML body. When set, the message is built as "
+            "multipart/alternative with `body` as the text/plain fallback "
+            "for clients that don't render HTML — so `body` should carry a "
+            "real plain-text version of the same content, not be empty. "
+            "When omitted the message stays text/plain exactly as before. "
+            "Do NOT put HTML in `body`: it would deliver as raw source."
+        ),
+    )
     cc: list[str] | None = None
     bcc: list[str] | None = Field(
         default=None,
@@ -206,6 +218,16 @@ class UpdateDraftInput(_AccountScoped):
     cc: list[str] | None = None
     subject: str | None = Field(default=None, max_length=998)
     body: str | None = Field(default=None, max_length=200_000)
+    body_html: str | None = Field(
+        default=None,
+        max_length=500_000,
+        description=(
+            "New HTML body. Requires `body` (the plain-text alternative) in "
+            "the same call. When both `body` and `body_html` are omitted the "
+            "original draft's body — including an existing HTML alternative — "
+            "is preserved unchanged."
+        ),
+    )
     in_reply_to: str | None = None
     references: list[str] | None = None
     attachments: list[AttachmentSpec] | None = Field(
@@ -240,6 +262,17 @@ class ReplyDraftInput(_AccountScoped):
     mailbox: str = Field(default="INBOX", max_length=255, description="Mailbox holding the original message.")
     uid: int = Field(ge=1, description="UID of the original message within the mailbox.")
     body: str = Field(max_length=200_000, description="The reply body you want to draft.")
+    body_html: str | None = Field(
+        default=None,
+        max_length=500_000,
+        description=(
+            "HTML reply body. When set, the reply is multipart/alternative "
+            "with `body` as the text/plain fallback. Useful when replying "
+            "to an HTML thread (a plain-text reply breaks the conversation's "
+            "formatting in Outlook). The attribution quote is appended to "
+            "both alternatives automatically."
+        ),
+    )
     reply_all: bool = Field(
         default=False,
         description="If true, address all recipients of the original (minus your own address).",

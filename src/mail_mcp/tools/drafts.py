@@ -22,6 +22,12 @@ from .schemas import (
     UpdateDraftInput,
 )
 
+_HTML_IN_BODY_WARNING = (
+    "body looks like HTML but the message was built as text/plain — the "
+    "recipient will see raw markup. Pass the HTML in body_html (and a "
+    "plain-text version in body) to have it rendered."
+)
+
 
 def _drafts_mailbox_strict(
     client, account: AccountModel, override: str | None, *, tool: str,
@@ -71,6 +77,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         in_reply_to=params.in_reply_to,
         references=params.references,
         attachments=attachments,
+        body_html=params.body_html,
     )
     # BCC is deliberately not persisted on a draft: the user's mail client
     # will re-enter BCC at send time. Drafts with BCC headers break some
@@ -99,6 +106,8 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
             "BCC was not persisted on the draft (re-enter it at send time). "
             "Use send_email if you need BCC delivered now."
         )
+    if params.body_html is None and smtp_client.looks_like_html(params.body):
+        response["html_warning"] = _HTML_IN_BODY_WARNING
     return response
 
 
@@ -117,11 +126,12 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
             cc=params.cc,
             reply_all=params.reply_all,
             include_original_quote=params.include_original_quote,
+            body_html=params.body_html,
         )
         drafts_mailbox, draft_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
         )
-    return {
+    response = {
         "account": acct.alias,
         "mailbox": drafts_mailbox,
         "uid": int(draft_uid),
@@ -129,6 +139,9 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         "in_reply_to": msg.get("In-Reply-To"),
         "subject": msg.get("Subject"),
     }
+    if params.body_html is None and smtp_client.looks_like_html(params.body):
+        response["html_warning"] = _HTML_IN_BODY_WARNING
+    return response
 
 
 def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
@@ -172,20 +185,32 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
+        if params.body_html is not None and params.body is None:
+            raise ValidationError(
+                "body_html requires body in the same call: body is the "
+                "plain-text alternative of the multipart/alternative pair. "
+                "Omit both to preserve the original draft's body."
+            )
         # Default to a plain-text body. When preserving the original body
-        # (params.body is None), fall back through plain THEN html so an
-        # HTML-only draft (common from Outlook / Apple Mail / Thunderbird)
-        # keeps its content instead of being flattened to an empty text/plain
-        # part — append-then-delete would make that loss permanent.
+        # (params.body is None), keep whatever the draft actually had: both
+        # alternatives of a multipart/alternative draft (as produced by
+        # save_draft with body_html), an HTML-only body (common from Outlook /
+        # Apple Mail / Thunderbird), or plain text. Anything less silently
+        # loses content — append-then-delete makes that loss permanent.
         new_body_subtype = "plain"
+        new_body_html = params.body_html
         if params.body is not None:
             new_body = params.body
         else:
-            preserved = original.get_body(preferencelist=("plain", "html"))
-            if preserved is not None:
-                new_body = preserved.get_content()
-                if preserved.get_content_subtype() == "html":
-                    new_body_subtype = "html"
+            preserved_plain = original.get_body(preferencelist=("plain",))
+            preserved_html = original.get_body(preferencelist=("html",))
+            if preserved_plain is not None:
+                new_body = preserved_plain.get_content()
+                if preserved_html is not None:
+                    new_body_html = preserved_html.get_content()
+            elif preserved_html is not None:
+                new_body = preserved_html.get_content()
+                new_body_subtype = "html"
             else:
                 new_body = ""
         in_reply_to = params.in_reply_to if params.in_reply_to is not None else original.get("In-Reply-To")
@@ -205,6 +230,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             references=references,
             attachments=new_attachments,
             body_subtype=new_body_subtype,
+            body_html=new_body_html,
         )
         if params.attachments is None:
             # Preserve the original's attachments — caller did not opt in to

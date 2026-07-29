@@ -133,9 +133,10 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         in_reply_to=params.in_reply_to,
         references=params.references,
         attachments=attachments,
+        body_html=params.body_html,
     )
     message_id = smtp_client.send(acct, creds, msg, bcc=bcc)
-    return {
+    response = {
         "account": acct.alias,
         "message_id": message_id,
         "recipients": {
@@ -150,3 +151,10 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
             for a in attachments
         ],
     }
+    if params.body_html is None and smtp_client.looks_like_html(params.body):
+        response["html_warning"] = (
+            "body looks like HTML but the message was sent as text/plain — "
+            "the recipient will see raw markup. Pass the HTML in body_html "
+            "(and a plain-text version in body) to have it rendered."
+        )
+    return response
