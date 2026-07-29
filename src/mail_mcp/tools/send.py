@@ -151,7 +151,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
             for a in attachments
         ],
     }
-    if params.body_html is None and smtp_client.looks_like_html(params.body):
+    if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = (
             "body looks like HTML but the message was sent as text/plain — "
             "the recipient will see raw markup. Pass the HTML in body_html "

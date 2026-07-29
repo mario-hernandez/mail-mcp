@@ -17,6 +17,7 @@ from __future__ import annotations
 import email
 import email.policy
 import html as _html_lib
+import re
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
@@ -33,6 +34,7 @@ from .safety.validation import (
 RE_PREFIX = "Re: "
 FWD_PREFIX = "Fwd: "
 MAX_QUOTED_LINES = 400
+_CLOSING_BODY_RE = re.compile(r"</body\s*>", re.IGNORECASE)
 
 
 class PartialDeliveryError(RuntimeError):
@@ -160,6 +162,20 @@ def carry_over_attachments(src: EmailMessage, dst: EmailMessage) -> int:
             dst.add_attachment(
                 payload, maintype=maintype, subtype=subtype, filename=filename or None,
             )
+        # Preserve inline-image identity: an HTML alternative that references
+        # ``src="cid:..."`` needs the carried part to keep its Content-ID and
+        # inline disposition, or every mail client shows a broken image plus a
+        # stray attachment (cid resolution is message-wide per RFC 2392, so
+        # the flattened related->mixed structure still renders).
+        new_part = dst.get_payload()[-1]
+        cid = part.get("Content-ID")
+        if cid:
+            new_part["Content-ID"] = cid
+        if part.get_content_disposition() == "inline":
+            del new_part["Content-Disposition"]
+            new_part["Content-Disposition"] = "inline"
+            if filename:
+                new_part.set_param("filename", filename, header="Content-Disposition")
         count += 1
     return count
 
@@ -425,8 +441,13 @@ def _append_quote_html(body_html: str, quote_text: str) -> str:
     """
     quote_html = "<br>\n".join(_html_lib.escape(line) for line in quote_text.splitlines())
     block = f'<br><br><div class="quote-attribution">{quote_html}</div>'
-    idx = body_html.lower().rfind("</body>")
-    if idx != -1:
+    # Case-insensitive search on the ORIGINAL string. Never compute the index
+    # on a .lower() copy: str.lower() does not preserve length (U+0130 'İ'
+    # lowers to two characters), so a lowered-string offset lands mid-tag and
+    # corrupts the HTML.
+    matches = list(_CLOSING_BODY_RE.finditer(body_html))
+    if matches:
+        idx = matches[-1].start()
         return body_html[:idx] + block + body_html[idx:]
     return body_html + block
 

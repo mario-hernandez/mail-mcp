@@ -106,7 +106,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
             "BCC was not persisted on the draft (re-enter it at send time). "
             "Use send_email if you need BCC delivered now."
         )
-    if params.body_html is None and smtp_client.looks_like_html(params.body):
+    if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
     return response
 
@@ -139,7 +139,7 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         "in_reply_to": msg.get("In-Reply-To"),
         "subject": msg.get("Subject"),
     }
-    if params.body_html is None and smtp_client.looks_like_html(params.body):
+    if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
     return response
 
@@ -185,7 +185,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
-        if params.body_html is not None and params.body is None:
+        if params.body_html and params.body is None:
             raise ValidationError(
                 "body_html requires body in the same call: body is the "
                 "plain-text alternative of the multipart/alternative pair. "
@@ -202,14 +202,17 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         if params.body is not None:
             new_body = params.body
         else:
+            # _safe_get_content, never .get_content(): drafts written by other
+            # clients can declare unknown/malformed charsets (LookupError),
+            # and a crash here would make the draft un-updatable forever.
             preserved_plain = original.get_body(preferencelist=("plain",))
             preserved_html = original.get_body(preferencelist=("html",))
             if preserved_plain is not None:
-                new_body = preserved_plain.get_content()
+                new_body = imap_client._safe_get_content(preserved_plain)
                 if preserved_html is not None:
-                    new_body_html = preserved_html.get_content()
+                    new_body_html = imap_client._safe_get_content(preserved_html)
             elif preserved_html is not None:
-                new_body = preserved_html.get_content()
+                new_body = imap_client._safe_get_content(preserved_html)
                 new_body_subtype = "html"
             else:
                 new_body = ""

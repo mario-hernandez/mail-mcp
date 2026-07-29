@@ -416,6 +416,103 @@ def test_update_draft_body_replaces_with_plain_only(monkeypatch):
     assert rebuilt.get_content_type() == "text/plain"
 
 
+# ---------- fixes from the adversarial security review (2026-07-29) ----------
+
+def test_reply_quote_insertion_survives_unicode_lower_length_change():
+    """U+0130 'İ' lowers to two chars — the </body> index must be computed on
+    the ORIGINAL string, never a .lower() copy, or the quote lands mid-tag."""
+    for n in (1, 3, 7):
+        msg = smtp_client.build_reply_message(
+            from_addr="me@example.com",
+            original_headers=_reply_headers(),
+            body_text="ok",
+            body_html="<html><body><p>" + "İ" * n + "yi günler</p></body></html>",
+            include_original_quote=True,
+        )
+        content = msg.get_body(preferencelist=("html",)).get_content()
+        assert content.rstrip().endswith("</body></html>"), content[-60:]
+        assert content.count("</body>") == 1
+        assert content.rindex("wrote:") < content.rindex("</body>")
+
+
+def test_reply_quote_insertion_handles_uppercase_body_tag():
+    msg = smtp_client.build_reply_message(
+        from_addr="me@example.com",
+        original_headers=_reply_headers(),
+        body_text="ok",
+        body_html="<HTML><BODY><p>ok</p></BODY></HTML>",
+        include_original_quote=True,
+    )
+    content = msg.get_body(preferencelist=("html",)).get_content()
+    assert content.rindex("wrote:") < content.rindex("</BODY>")
+
+
+def test_update_draft_tolerates_unknown_charset_in_html_part(monkeypatch):
+    """A draft whose HTML part declares charset="unicode" must not make
+    update_draft crash with LookupError — the draft would be un-updatable."""
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    raw = (
+        b"From: me@example.com\r\nTo: you@example.com\r\nSubject: s\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/alternative; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nplain ok\r\n"
+        b'--B\r\nContent-Type: text/html; charset="unicode"\r\n\r\n<p>html ok</p>\r\n'
+        b"--B--\r\n"
+    )
+    captured: dict = {}
+    _patch_update_io(monkeypatch, captured, raw)
+    update_draft(_cfg(), UpdateDraftInput(account="t", uid=1, subject="New subject"))
+    rebuilt = _parse(captured["bytes"])
+    plain, html = _alternative_parts(rebuilt)
+    assert "plain ok" in plain.get_content()
+    assert "html ok" in html.get_content(), "the HTML part must survive a broken charset"
+
+
+def test_carry_over_attachments_preserves_content_id_and_inline_disposition():
+    """cid: references in a preserved HTML body need the carried image to keep
+    its Content-ID and inline disposition, or clients render a broken image."""
+    import email.policy as _policy
+    from email.message import EmailMessage
+
+    orig = EmailMessage(policy=_policy.default)
+    orig["From"] = "a@e.com"
+    orig["To"] = "b@e.com"
+    orig["Subject"] = "s"
+    orig.set_content("plain fallback")
+    orig.add_alternative('<img src="cid:logo123">', subtype="html")
+    orig.get_body(preferencelist=("html",)).add_related(
+        b"\x89PNG fake", maintype="image", subtype="png", cid="<logo123>",
+    )
+
+    new = smtp_client.build_message(
+        from_addr="a@e.com", to=["b@e.com"], subject="s2",
+        body_text="plain fallback", body_html='<img src="cid:logo123">',
+    )
+    assert smtp_client.carry_over_attachments(orig, new) == 1
+    img = next(iter(new.iter_attachments()))
+    assert img.get("Content-ID") == "<logo123>"
+    assert img.get_content_disposition() == "inline"
+
+
+def test_empty_body_html_still_warns_on_html_looking_body(monkeypatch):
+    """body_html="" must behave exactly like an omitted body_html: the message
+    is text/plain AND the html_warning fires (models fill "" in optional
+    fields all the time — the '' escape hatch was the silent-raw-markup bug
+    all over again)."""
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    captured: dict = {}
+    _patch_draft_io(monkeypatch, captured)
+    out = save_draft(_cfg(), SaveDraftInput(
+        account="t", to=["x@example.com"], subject="s", body=HTML, body_html="",
+    ))
+    assert "html_warning" in out
+    assert _parse(captured["bytes"]).get_content_type() == "text/plain"
+
+
 def test_update_draft_body_html_without_body_rejected(monkeypatch):
     from mail_mcp.tools.drafts import update_draft
     from mail_mcp.tools.schemas import UpdateDraftInput
