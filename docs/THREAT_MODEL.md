@@ -83,6 +83,7 @@ Mitigations:
 
 ## Known limits
 
-- This server does **not** implement OAuth2. Providers that require it (Gmail, Outlook) need an app password or will not work until a future version adds OAuth.
+- OAuth2 is implemented for **Microsoft 365 only** (see `docs/OAUTH_MICROSOFT.md`). Gmail needs an app password — no embedded Google `client_id` by design (BYO Cloud project or `email-oauth2-proxy`).
+- **The text/plain and text/html alternatives of an outgoing message are independent inputs.** `body` and `body_html` are not compared, and the read surface (`get_email`) returns the plain part — so an agent reviewing its own sent/drafted mail sees `body` while a human recipient renders `body_html`. A prompt-injected model could exploit that divergence to show reviewers one text and recipients another. The mitigations are the existing send gates (drafts reviewed by a human in a real mail client render the HTML; `send_email` requires env-var opt-in + `confirm=true` + rate limit), not content comparison. Treat `body_html` with the same suspicion as any other outbound content.
 - The untrusted-content wrapper is a *mitigation*, not a guarantee. A sufficiently capable model, or one not trained to respect the envelope, may still be influenced by the content.
 - `imapclient` logs its own wire traffic at DEBUG. We set the module logger to WARNING by default; do not raise it on production systems.

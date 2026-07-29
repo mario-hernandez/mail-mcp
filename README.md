@@ -28,6 +28,7 @@ Since v0.3 the codebase has gone through repeated adversarial review rounds — 
 - 🧱 **Prompt-injection hardened.** Email bodies are wrapped in an `<untrusted_email_content>` envelope with an explicit warning; closing-tag breakouts and zero-width injection characters are neutralised before the model sees them.
 - 🚪 **Destructive tools are gated by default.** Folder operations and bulk mutations are *not even registered* unless `MAIL_MCP_WRITE_ENABLED=true`. Send tools are visible always but refuse to transmit until both env vars are set; the LLM gets a typed `SEND_NOT_ENABLED` error with the exact recipe to enable instead of guessing the capability is missing.
 - 🌍 **Localised mailboxes work out of the box.** `save_draft`, `list_drafts`, and `delete_emails` resolve the actual server folder at call time via RFC 6154 SPECIAL-USE: `Borradores`, `Brouillons`, `Entwürfe`, `Bozze`, `Papelera`, `Elementos eliminados`, `[Gmail]/Drafts`, … all handled. No more `[TRYCREATE] folder does not exist` on Outlook ES/FR/DE accounts.
+- 🎨 **HTML email done right.** Pass `body_html` to `save_draft` / `send_email` / `reply_draft` / `update_draft` and the message is built as `multipart/alternative` with `body` as the plain-text fallback — the structure spam filters and text-mode clients expect. Reply quotes land in **both** alternatives (HTML-escaped — From/Date are attacker-controlled). And if you paste HTML into `body` by mistake, the response carries an explicit `html_warning` instead of silently delivering raw markup.
 - 🧾 **Forensic attachment mode for chain-of-custody.** `raw_passthrough=true` on an `AttachmentSpec` sends the file's bytes byte-for-byte. SHA-256 is preserved end-to-end through `save_draft` → IMAP → `download_attachment`. Useful for evidence preservation, eIDAS sealing, BEC incident response.
 - 🪶 **Small, auditable, six direct dependencies.** `mcp`, `imapclient`, `keyring`, `pydantic`, `certifi`, `defusedxml`. No web UI, no telemetry, no update checks, no relays, no phone-home.
 - 🧰 **Clean tool surface** — structured IMAP search (no concatenation), bounded outputs, path-traversal-safe attachment saves, RFC 4315 UID-scoped EXPUNGE that refuses to silently delete other clients' messages.
@@ -57,10 +58,10 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/`. Forwarded `message/rfc822` parts download as `.eml`. |
 | `get_email_raw` | ✅ | default | Escape hatch: full RFC822 source of one message (also saved to disk as `.eml`). Use when `get_email` body is empty or `list_attachments` is missing parts visible in the user's mail client. |
 | `list_drafts` | ✅ | default | List the account's Drafts mailbox without guessing its name |
-| `save_draft` | ✍️ | default | Build a MIME draft (supports disk-path attachments) |
-| `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject |
+| `save_draft` | ✍️ | default | Build a MIME draft (disk-path attachments; HTML via `body_html` → `multipart/alternative`) |
+| `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject; `body_html` keeps HTML threads formatted |
 | `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822` |
-| `update_draft` | ✍️ | default | Edit a draft in place (APPEND-then-DELETE, preserves Message-ID) |
+| `update_draft` | ✍️ | default | Edit a draft in place (APPEND-then-DELETE, preserves Message-ID and both body alternatives) |
 | `copy_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Copy without moving (file in two folders) |
 | `move_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Move messages between mailboxes |
 | `mark_emails` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Set/clear Seen and Flagged |
@@ -93,6 +94,9 @@ Every tool takes `account="<alias>"`. Omit it to use the default from `~/.config
 
 **Search across non-English mail.**
 IMAP SEARCH is plain-ASCII per RFC 3501. Use `"nomina"`, not `"nómina"`. Folder names in your language (`Borradores`, `Papelera`, `Elementos eliminados`, `Brouillons`, `Entwürfe`, …) are detected at setup and resolved at every call; the LLM never has to know the localised string.
+
+**Send a formatted (HTML) email.**
+Put the HTML in `body_html` and a real plain-text version of the same content in `body` — the message ships as `multipart/alternative` (plain + html), which is what spam filters and text-mode clients expect. HTML pasted into `body` alone is delivered as raw source; the response flags it with `html_warning` instead of failing. Works on `save_draft`, `send_email`, `reply_draft` (quote appended to both parts) and `update_draft` (partial updates preserve both parts). Link images by URL — inline `cid:` embedding is not supported.
 
 **Send evidence with hash integrity (forensic).**
 Pass `raw_passthrough: true` in an `AttachmentSpec`. The bytes go on the wire byte-for-byte, base64-encoded but never re-canonicalised. The recipient verifies `SHA-256(received) == SHA-256(source-on-disk)`. Trade-off: the file arrives as `application/octet-stream` regardless of extension, so the recipient saves and renames if they want their mail client to auto-render it as `.eml`.

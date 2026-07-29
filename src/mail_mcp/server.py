@@ -330,7 +330,9 @@ def build_server(cfg: Config | None = None) -> Server:
                 description=(
                     "Build a MIME message and store it in the Drafts mailbox. "
                     "Preferred write path — the human reviews the draft in "
-                    "their own email client before sending."
+                    "their own email client before sending. For rich/formatted "
+                    "email pass the HTML in body_html (with a plain-text "
+                    "version in body); HTML placed in body ships as raw text."
                 ),
                 inputSchema=SaveDraftInput.model_json_schema(),
                 annotations={"readOnlyHint": False, "destructiveHint": False},
@@ -358,7 +360,9 @@ def build_server(cfg: Config | None = None) -> Server:
                     "Draft a reply to an existing message. Threading headers "
                     "(In-Reply-To, References, Subject 'Re: …') are derived "
                     "from the original; the original body is NOT re-read into "
-                    "the model context, only an attribution header is added."
+                    "the model context, only an attribution header is added. "
+                    "Replying to an HTML thread? Pass body_html to keep the "
+                    "conversation's formatting."
                 ),
                 inputSchema=ReplyDraftInput.model_json_schema(),
                 annotations={"readOnlyHint": False, "destructiveHint": False},
@@ -491,7 +495,9 @@ def build_server(cfg: Config | None = None) -> Server:
                 description=(
                     "Send an email via SMTP. Gated by environment variables "
                     "and requires confirm=true. Prefer save_draft unless you "
-                    "really intend to send without human review."
+                    "really intend to send without human review. For rich/"
+                    "formatted email pass the HTML in body_html (with a "
+                    "plain-text version in body)."
                 ),
                 inputSchema=SendEmailInput.model_json_schema(),
                 annotations={"destructiveHint": True, "openWorldHint": True},

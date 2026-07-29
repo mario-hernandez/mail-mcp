@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import email
 import email.policy
+import html as _html_lib
+import re
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
@@ -32,6 +34,7 @@ from .safety.validation import (
 RE_PREFIX = "Re: "
 FWD_PREFIX = "Fwd: "
 MAX_QUOTED_LINES = 400
+_CLOSING_BODY_RE = re.compile(r"</body\s*>", re.IGNORECASE)
 
 
 class PartialDeliveryError(RuntimeError):
@@ -159,6 +162,20 @@ def carry_over_attachments(src: EmailMessage, dst: EmailMessage) -> int:
             dst.add_attachment(
                 payload, maintype=maintype, subtype=subtype, filename=filename or None,
             )
+        # Preserve inline-image identity: an HTML alternative that references
+        # ``src="cid:..."`` needs the carried part to keep its Content-ID and
+        # inline disposition, or every mail client shows a broken image plus a
+        # stray attachment (cid resolution is message-wide per RFC 2392, so
+        # the flattened related->mixed structure still renders).
+        new_part = dst.get_payload()[-1]
+        cid = part.get("Content-ID")
+        if cid:
+            new_part["Content-ID"] = cid
+        if part.get_content_disposition() == "inline":
+            del new_part["Content-Disposition"]
+            new_part["Content-Disposition"] = "inline"
+            if filename:
+                new_part.set_param("filename", filename, header="Content-Disposition")
         count += 1
     return count
 
@@ -174,6 +191,7 @@ def build_message(
     references: list[str] | None = None,
     attachments: list | None = None,
     body_subtype: str = "plain",
+    body_html: str | None = None,
 ) -> EmailMessage:
     """Assemble a safe RFC 5322 message.
 
@@ -185,6 +203,13 @@ def build_message(
     default; ``"html"`` to emit a ``text/html`` body). It exists so
     ``update_draft`` can preserve an HTML-only draft's body instead of
     silently flattening it to an empty text/plain part.
+
+    ``body_html``, when non-empty, upgrades the body to
+    ``multipart/alternative``: ``body_text`` becomes the text/plain
+    alternative and ``body_html`` the text/html one (in that order — RFC 2046
+    §5.1.4 orders alternatives by increasing faithfulness). ``body_subtype``
+    is ignored in that case. Attachments are added afterwards, which wraps
+    the whole thing in ``multipart/mixed``.
 
     BCC is handled separately by :func:`build_message_with_bcc`; the message
     returned here never carries a ``Bcc`` header.
@@ -216,7 +241,14 @@ def build_message(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = " ".join(references)
-    msg.set_content(body_text, subtype=body_subtype)
+    if body_html:
+        msg.set_content(body_text)
+        msg.add_alternative(body_html, subtype="html")
+    else:
+        msg.set_content(body_text, subtype=body_subtype)
+    # Attachments MUST come after the body/alternative: add_attachment() on a
+    # multipart/alternative message re-wraps it in multipart/mixed, keeping
+    # the alternative intact as the first part.
     _attach_files(msg, attachments or [])
     return msg
 
@@ -232,6 +264,7 @@ def build_message_with_bcc(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     attachments: list | None = None,
+    body_html: str | None = None,
 ) -> tuple[EmailMessage, list[str]]:
     """Assemble a message and return it together with the BCC list.
 
@@ -250,6 +283,7 @@ def build_message_with_bcc(
         in_reply_to=in_reply_to,
         references=references,
         attachments=attachments,
+        body_html=body_html,
     )
     return msg, list(bcc or [])
 
@@ -264,6 +298,7 @@ def build_reply_message(
     reply_all: bool = False,
     include_original_quote: bool = True,
     attachments: list | None = None,
+    body_html: str | None = None,
 ) -> EmailMessage:
     """Assemble a reply whose threading headers match ``original_headers``.
 
@@ -273,6 +308,11 @@ def build_reply_message(
     the original body (short, quoted with ``> ``) is included — **the caller**
     provides that text; this function does not re-parse the original to avoid
     dragging adversary-controlled content back through the LLM.
+
+    With ``body_html`` the reply becomes ``multipart/alternative``. The
+    attribution quote is appended to BOTH alternatives (HTML-escaped in the
+    html one) so the two parts stay consistent — mismatched alternatives are
+    a spam-filter signal and confuse recipients who switch views.
     """
     recipients = _reply_recipients(from_addr, original_headers, extra_to, reply_all)
     subject_raw = original_headers.get("Subject", "") or ""
@@ -283,8 +323,12 @@ def build_reply_message(
     references = prior_refs + ([in_reply_to] if in_reply_to else [])
 
     body = body_text.rstrip()
+    html_body = body_html
     if include_original_quote:
-        body += "\n\n" + _quote(original_headers, body_text_limit_lines=MAX_QUOTED_LINES)
+        quote = _quote(original_headers, body_text_limit_lines=MAX_QUOTED_LINES)
+        body += "\n\n" + quote
+        if html_body:
+            html_body = _append_quote_html(html_body, quote)
     return build_message(
         from_addr=from_addr,
         to=recipients["to"],
@@ -294,6 +338,7 @@ def build_reply_message(
         in_reply_to=in_reply_to,
         references=references or None,
         attachments=attachments,
+        body_html=html_body,
     )
 
 
@@ -384,6 +429,39 @@ def _quote(headers: dict[str, str], *, body_text_limit_lines: int) -> str:
     name, addr = parseaddr(headers.get("From", ""))
     who = formataddr((name, addr)) if (name or addr) else "the original sender"
     return f"On {date}, {who} wrote:\n"
+
+
+def _append_quote_html(body_html: str, quote_text: str) -> str:
+    """Append the attribution quote to an HTML body, escaped.
+
+    The quote contains adversary-controlled header values (From, Date), so
+    every line is HTML-escaped before insertion. When the body is a complete
+    document the block is inserted before the closing ``</body>`` tag to keep
+    it well-formed; otherwise it is appended.
+    """
+    quote_html = "<br>\n".join(_html_lib.escape(line) for line in quote_text.splitlines())
+    block = f'<br><br><div class="quote-attribution">{quote_html}</div>'
+    # Case-insensitive search on the ORIGINAL string. Never compute the index
+    # on a .lower() copy: str.lower() does not preserve length (U+0130 'İ'
+    # lowers to two characters), so a lowered-string offset lands mid-tag and
+    # corrupts the HTML.
+    matches = list(_CLOSING_BODY_RE.finditer(body_html))
+    if matches:
+        idx = matches[-1].start()
+        return body_html[:idx] + block + body_html[idx:]
+    return body_html + block
+
+
+def looks_like_html(text: str) -> bool:
+    """Cheap heuristic: does ``text`` look like an HTML document?
+
+    Deliberately narrow — only ``<!doctype`` / ``<html`` prefixes — so it
+    never misfires on prose that merely mentions markup. The write tools use
+    it to warn when a caller passes HTML in ``body`` without ``body_html``
+    (the message would deliver as raw source in a text/plain part, with no
+    error anywhere).
+    """
+    return text.lstrip()[:64].lower().startswith(("<!doctype", "<html"))
 
 
 def _sanitize_attachment_name(value: str) -> str:
