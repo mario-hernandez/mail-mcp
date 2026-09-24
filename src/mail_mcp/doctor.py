@@ -84,6 +84,7 @@ def run(argv: list[str] | None = None) -> int:
         )
         status = _keyring_status(acct.alias, acct.email, acct.auth)
         print(f"     auth         : {acct.auth}")
+        print(f"     smtp user    : {acct.smtp_username or acct.email}")
         print(f"     keyring      : {status}")
         if args.connect:
             print(f"     imap+smtp    : {_live_check(acct)}")

@@ -39,6 +39,14 @@ class AccountModel(BaseModel):
     # Microsoft OAuth-specific parameters. Non-empty only when auth == "oauth-microsoft".
     oauth_tenant: str | None = None
     oauth_client_id: str | None = None
+    # Optional SMTP login identity when it differs from ``email``. Microsoft 365
+    # only accepts SMTP AUTH as the signed-in user's UPN: a mailbox whose UPN is
+    # ``x@tenant.onmicrosoft.com`` but whose address is ``x@company.com``, or a
+    # shared mailbox sent through a delegate with Send As, fails with
+    # ``535 5.7.3`` unless the SASL user is the UPN. IMAP keeps using ``email``
+    # (that is how delegated/shared mailbox access is addressed). ``None`` keeps
+    # the historical behaviour: SMTP logs in as ``email``.
+    smtp_username: str | None = None
 
     @field_validator("alias")
     @classmethod
@@ -49,6 +57,13 @@ class AccountModel(BaseModel):
     @classmethod
     def _check_email(cls, v: str) -> str:
         return validate_email_address(v, field="email")
+
+    @field_validator("smtp_username")
+    @classmethod
+    def _check_smtp_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return validate_email_address(v, field="smtp_username")
 
     @field_validator("imap_host", "smtp_host")
     @classmethod

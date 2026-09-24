@@ -485,11 +485,16 @@ def _smtp_authenticate(server: smtplib.SMTP, account: AccountModel, credential: 
     """
     from .credentials import AuthCredential  # local import avoids a cycle
 
+    # ``smtp_username`` (optional) overrides the SMTP login identity only — see
+    # AccountModel. IMAP and the From header keep using ``account.email``.
+    override = account.smtp_username
+
     if isinstance(credential, AuthCredential):
+        login_user = override or credential.username
         if credential.kind == "oauth2":
             from . import oauth
 
-            xoauth2 = oauth.build_xoauth2(credential.username, credential.secret)
+            xoauth2 = oauth.build_xoauth2(login_user, credential.secret)
             # ``smtplib.SMTP.auth`` (CPython smtplib.py) calls the callback
             # with the server challenge and base64-encodes whatever it
             # returns. Returning a string-decoded ASCII view of the raw
@@ -499,10 +504,10 @@ def _smtp_authenticate(server: smtplib.SMTP, account: AccountModel, credential: 
             sasl = xoauth2.decode("ascii")
             server.auth("XOAUTH2", lambda _challenge="": sasl, initial_response_ok=True)
             return
-        server.login(credential.username, credential.secret)
+        server.login(login_user, credential.secret)
         return
     # Legacy str path (password). Preserved for the wizard's pre-save check.
-    server.login(account.email, credential)
+    server.login(override or account.email, credential)
 
 
 def test_login(account: AccountModel, credential: Any, *, timeout: float = 15.0) -> None:

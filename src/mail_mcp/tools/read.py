@@ -209,7 +209,12 @@ def get_account_info(cfg: Config, params: AccountInfoInput) -> dict:
         "alias": acct.alias,
         "email": acct.email,
         "imap": {"host": acct.imap_host, "port": acct.imap_port, "ssl": acct.imap_use_ssl},
-        "smtp": {"host": acct.smtp_host, "port": acct.smtp_port, "starttls": acct.smtp_starttls},
+        "smtp": {
+            "host": acct.smtp_host,
+            "port": acct.smtp_port,
+            "starttls": acct.smtp_starttls,
+            "username": acct.smtp_username or acct.email,
+        },
         "drafts_mailbox": acct.drafts_mailbox,
         "trash_mailbox": acct.trash_mailbox,
         "is_default": acct.alias == cfg.model.default_alias,

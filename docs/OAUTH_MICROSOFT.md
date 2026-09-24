@@ -141,6 +141,39 @@ a password reset, conditional access policy change, or 90 days idle). Run
 `mail-mcp init` once to reauthenticate; the stored refresh token is
 overwritten in the keyring.
 
+### SMTP `535 5.7.3 Authentication unsuccessful` while IMAP works
+Microsoft 365 accepts SMTP AUTH only as the **UPN of the user who signed in**
+(the `upn` claim of the access token). IMAP is more lenient: it lets a user
+open a mailbox addressed by its email, including a shared mailbox the user has
+Full Access to. Two common cases trip this:
+
+- the user's UPN is `name@tenant.onmicrosoft.com` while the mailbox address
+  (`email` in the config) is `name@company.com`;
+- the account is a shared mailbox (or another user's mailbox) that you reach
+  through your own sign-in — SMTP must log in as *you*, and you need **Send As**
+  on that mailbox for the `From` address.
+
+Fix: set `smtp_username` on the account to the UPN. IMAP, the `From` header
+and the SMTP envelope sender keep using `email`; only the SMTP SASL user
+changes (Send As is still enforced by the server).
+
+```json
+{ "alias": "work", "email": "name@company.com", "smtp_username": "name@tenant.onmicrosoft.com", "...": "..." }
+```
+
+How to set it: edit `~/.config/mail-mcp/config.json` as above, or run
+`mail-mcp add-account … --smtp-username name@tenant.onmicrosoft.com`. Re-running
+`mail-mcp init` or `add-account` on the same alias keeps an existing value.
+On the very first `init` of such an account the wizard's SMTP check fails
+(it has no override yet): choose *Save anyway*, then add the field.
+`mail-mcp doctor` and the `get_account_info` tool show the SMTP user in use.
+
+Also check that SMTP AUTH is enabled for the signing-in mailbox
+(`535 5.7.139 … SmtpClientAuthentication is disabled for the Tenant` means it
+is not): `Set-CASMailbox -Identity <upn> -SmtpClientAuthenticationDisabled $false`.
+The per-mailbox setting overrides the tenant default and takes ~10 minutes to
+apply.
+
 ### Verifying a saved account without sending anything
 ```
 mail-mcp doctor --connect

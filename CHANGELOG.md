@@ -7,7 +7,16 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+- Optional `smtp_username` on each account: the SMTP login identity when it
+  differs from `email`. Microsoft 365 accepts SMTP AUTH only as the signed-in
+  user's UPN (e.g. `name@tenant.onmicrosoft.com`), so accounts whose address is
+  on a custom domain, or shared mailboxes sent through a delegate with Send As,
+  failed with `535 5.7.3`. IMAP and the `From` header keep using `email`.
+  Set it with `mail-mcp add-account … --smtp-username <upn>` or by editing the
+  config; `init` and `add-account` keep an existing value when overwriting an
+  alias. `doctor` and `get_account_info` show the SMTP user. See
+  `docs/OAUTH_MICROSOFT.md`.
 
 ## [0.4.2] — 2026-05-27
 

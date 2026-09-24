@@ -60,6 +60,11 @@ def _cmd_add_account(args: argparse.Namespace) -> int:
     # Build and validate the account model BEFORE touching the keyring, so a
     # bad host/port/alias fails without leaving an orphan secret the user
     # can't see (the config is the only place that references the alias).
+    # ``--smtp-username`` sets the SMTP login identity; when omitted on an
+    # existing alias we keep the previous value instead of silently dropping it.
+    smtp_username = args.smtp_username or next(
+        (a.smtp_username for a in cfg.model.accounts if a.alias == args.alias), None
+    )
     account = AccountModel(
         alias=args.alias,
         email=args.email,
@@ -71,6 +76,7 @@ def _cmd_add_account(args: argparse.Namespace) -> int:
         smtp_starttls=args.smtp_starttls,
         drafts_mailbox=args.drafts_mailbox,
         trash_mailbox=args.trash_mailbox,
+        smtp_username=smtp_username,
     )
     # Snapshot any pre-existing secret for this alias/email so a failed save
     # can be rolled back WITHOUT destroying a credential that was already
@@ -173,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--smtp-starttls", type=_bool_arg, default=True)
     add.add_argument("--drafts-mailbox", default="Drafts")
     add.add_argument("--trash-mailbox", default="Trash")
+    add.add_argument(
+        "--smtp-username",
+        default=None,
+        help="SMTP login identity when it differs from EMAIL (e.g. the Microsoft 365 UPN)",
+    )
     add.set_defaults(func=_cmd_add_account)
 
     sub.add_parser("list-accounts", help="list configured accounts").set_defaults(
