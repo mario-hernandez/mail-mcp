@@ -3,11 +3,12 @@
 Each account may carry an HTML and/or a plain-text signature that the write
 tools (``save_draft``, ``reply_draft``, ``forward_draft``, ``update_draft``
 when the body is replaced, and ``send_email``) append after the caller's text
-and before any reply quote — the placement Outlook and Apple Mail use.
+and before any quoted message — the placement Outlook and Apple Mail use.
 
 Where the files come from:
 
-* ``AccountModel.signature_html_path`` / ``signature_text_path`` when set;
+* ``AccountModel.signature_html_path`` / ``signature_text_path`` when set
+  (a relative path is taken relative to the config directory);
 * otherwise ``<config dir>/signatures/<alias>/firma.html`` and ``firma.txt``
   (``~/.config/mail-mcp/signatures/<alias>/`` in a default install). A missing
   default file simply means "no signature", which keeps every pre-existing
@@ -23,18 +24,25 @@ followed, to a regular file inside ``<config dir>/signatures/``, be at most
 :data:`MAX_SIGNATURE_BYTES`, and decode as UTF-8. That keeps a malformed or
 tampered config from turning every outgoing email into an exfiltration channel
 for arbitrary local files. Paths never come from tool arguments: the only
-per-call control is the boolean ``include_signature``.
+per-call control is the boolean ``include_signature``. Any problem reading a
+signature surfaces as :class:`ValidationError` — never a crash, never a
+silently unsigned message.
 
-Idempotence. The signature is not added to a part that already contains it
-(compared on normalised visible text, or on the raw HTML for image-only
-signatures), so re-sending a body that was read back from a signed draft never
-stacks a second copy.
+Placement and idempotence. The caller's body is split into its *own* part and
+any quoted message it carries (Outlook ``divRplyFwdMsg``, Gmail
+``gmail_quote``, ``<blockquote type="cite">``, "On … wrote:",
+"-----Original Message-----", a trailing ``>`` block…). The signature goes at
+the end of the own part, and it is only considered "already there" if the own
+part contains it — a signature that appears inside quoted material (the owner's
+earlier message in the thread) does not count, so a reply is still signed.
 """
 
 from __future__ import annotations
 
 import html as _html_lib
+import os
 import re
+import stat
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,8 +66,40 @@ _CLOSING_BODY_RE = re.compile(r"</body\s*>", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
 # Zero-width and bidi-control characters: invisible, and signatures extracted
 # from HTML often carry them (e.g. U+202D before a phone number). Ignored when
-# comparing, never removed from what is sent.
-_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠-⁩﻿]")
+# comparing, never removed from what is sent. Built from code points so the
+# source itself carries no invisible characters.
+_INVISIBLE_RANGES = ((0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x2069), (0xFEFF, 0xFEFF))
+_INVISIBLE_RE = re.compile(
+    "[" + "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in _INVISIBLE_RANGES) + "]"
+)
+
+# Where a quoted message starts in an HTML body (Outlook, Gmail, Thunderbird,
+# Apple Mail, Yahoo). The signature is inserted before the earliest match.
+_HTML_QUOTE_START_RE = re.compile(
+    r"<[a-z][a-z0-9]*\b[^>]*\b(?:id|class)\s*=\s*[\"']?[^\"'>]*"
+    r"(?:divRplyFwdMsg|appendonsend|stopSpelling|gmail_quote|moz-cite-prefix"
+    r"|yahoo_quoted|OutlookMessageHeader)"
+    r"|<blockquote\b[^>]*\btype\s*=\s*[\"']?cite",
+    re.IGNORECASE,
+)
+# Innermost-first, so nested blockquotes are removed completely by iterating.
+_BLOCKQUOTE_RE = re.compile(
+    r"<blockquote\b(?:(?!<blockquote\b).)*?</blockquote\s*>", re.IGNORECASE | re.DOTALL,
+)
+# Lines that start a quoted message in a plain-text body.
+_TEXT_QUOTE_HEADER_RE = re.compile(
+    r"^\s*(?:"
+    r"-{2,}\s*(?:original message|mensaje original|message d'origine|messaggio originale"
+    r"|ursprüngliche nachricht|forwarded message|mensaje reenviado|message transféré)\s*-{2,}"
+    r"|_{10,}"
+    r"|on\b.+\bwrote:"
+    r"|el\b.+\bescribió:"
+    r"|le\b.+\ba écrit\s?:"
+    r"|am\b.+\bschrieb\b.*:"
+    r"|il\b.+\bha scritto:"
+    r")\s*$",
+    re.IGNORECASE,
+)
 
 STATUS_ADDED = "added"
 STATUS_PRESENT = "already_present"
@@ -89,22 +129,55 @@ def signatures_root(cfg: Config) -> Path | None:
     return Path(cfg.path).expanduser().parent / SIGNATURES_DIRNAME
 
 
+# --- loading ---------------------------------------------------------------
+
+
 def _read_signature_file(path: Path, root: Path, *, field: str) -> str:
     try:
         resolved = path.expanduser().resolve(strict=True)
-    except (FileNotFoundError, OSError) as exc:
-        raise ValidationError(f"{field}: signature file not found: {path}") from exc
+    except (OSError, RuntimeError) as exc:  # RuntimeError: symlink loop on 3.11/3.12
+        raise ValidationError(f"{field}: signature file not found or unresolvable: {path}") from exc
     root_resolved = root.expanduser().resolve(strict=False)
     if not resolved.is_relative_to(root_resolved):
         raise ValidationError(
             f"{field}: signature file must live under {root} (got {path}, which "
             f"resolves to {resolved})"
         )
-    if not resolved.is_file():
-        raise ValidationError(f"{field}: signature path is not a regular file: {path}")
-    # Cap the read itself, not just the stat: the file could grow in between.
-    with resolved.open("rb") as fh:
-        data = fh.read(MAX_SIGNATURE_BYTES + 1)
+    # Read the inode that passed the check: O_NOFOLLOW refuses a final path
+    # component swapped for a symlink after the containment check, O_NONBLOCK
+    # keeps a FIFO from hanging the server, and fstat on the open descriptor
+    # decides "regular file" for exactly what is read.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        fd = os.open(resolved, flags)
+    except OSError as exc:
+        raise ValidationError(
+            f"{field}: signature file is not readable: {path} ({exc.strerror})"
+        ) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValidationError(f"{field}: signature path is not a regular file: {path}")
+        # Cap the read itself, not just a stat: the file could grow in between.
+        chunks: list[bytes] = []
+        remaining = MAX_SIGNATURE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError as exc:
+        raise ValidationError(
+            f"{field}: signature file is not readable: {path} ({exc.strerror})"
+        ) from exc
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
     if len(data) > MAX_SIGNATURE_BYTES:
         raise ValidationError(
             f"{field}: signature file exceeds the {MAX_SIGNATURE_BYTES}-byte limit: {path}"
@@ -124,12 +197,25 @@ def _resolve_part(
     if configured is not None:
         if root is None:
             raise ValidationError(f"{field}: no config directory to anchor signatures to")
-        return _read_signature_file(Path(configured), root, field=field)
+        candidate = Path(configured).expanduser()
+        if not candidate.is_absolute():
+            # Relative to the config directory — never to the process CWD,
+            # which differs between `doctor` in a shell and the MCP server.
+            candidate = root.parent / candidate
+        return _read_signature_file(candidate, root, field=field)
     if root is None:
         return None
     default = root / alias / default_name
-    if not default.exists() and not default.is_symlink():
+    try:
+        os.lstat(default)
+    except (FileNotFoundError, NotADirectoryError):
         return None  # no default file → no signature, the historical behaviour
+    except OSError as exc:
+        # Present but not inspectable (e.g. an unreadable directory): fail
+        # loudly rather than send unsigned mail the owner believes is signed.
+        raise ValidationError(
+            f"{field}: cannot access signature file {default} ({exc.strerror})"
+        ) from exc
     return _read_signature_file(default, root, field=field)
 
 
@@ -161,9 +247,9 @@ def load_signature(cfg: Config, acct: AccountModel) -> Signature | None:
 
     Raises :class:`ValidationError` when a signature file exists (or is
     explicitly configured) but is unusable — outside the signatures directory,
-    too large, not UTF-8, missing. Failing loudly beats silently sending an
-    unsigned message the owner believes is signed; the caller can always pass
-    ``include_signature=false``.
+    unreadable, too large, not UTF-8, missing. Failing loudly beats silently
+    sending an unsigned message the owner believes is signed; the caller can
+    always pass ``include_signature=false``.
     """
     root = signatures_root(cfg)
     html = _resolve_part(
@@ -183,21 +269,21 @@ def load_signature(cfg: Config, acct: AccountModel) -> Signature | None:
 
 
 def describe_signature(cfg: Config, acct: AccountModel) -> dict:
-    """Non-raising summary for ``get_account_info`` / ``doctor``."""
+    """Summary for ``get_account_info`` / ``doctor``. Never raises."""
     try:
         sig = load_signature(cfg, acct)
-    except ValidationError as exc:
+    except (ValidationError, OSError, RuntimeError) as exc:
         return {"html": False, "text": False, "error": str(exc)}
     if sig is None:
         return {"html": False, "text": False}
     return {"html": sig.html is not None, "text": sig.text is not None}
 
 
-# --- insertion -------------------------------------------------------------
+# --- where the caller's own text ends ---------------------------------------
 
 
 def _fingerprint(text: str) -> str:
-    text = unicodedata.normalize("NFC", text).replace(" ", " ")
+    text = unicodedata.normalize("NFC", text).replace(chr(0xA0), " ")  # NBSP → space
     text = _INVISIBLE_RE.sub("", text)
     return _WS_RE.sub(" ", text).strip().casefold()
 
@@ -208,23 +294,68 @@ def _html_visible_text(html: str) -> str:
     return _html_to_text(html)
 
 
-def _text_has_signature(body: str, sig_text: str) -> bool:
-    body_fp = _fingerprint(body)
-    sig_fp = _fingerprint(sig_text)
+def _is_quoted_line(line: str) -> bool:
+    return line.lstrip().startswith(">")
+
+
+def _split_text_quote(body: str, sig_text: str) -> tuple[str, str]:
+    """Split a plain-text body into (own text, quoted message).
+
+    The quote starts at the first reply/forward header line ("On … wrote:",
+    "-----Original Message-----", an Outlook ``____`` rule…) — ignoring lines
+    that belong to the signature itself, so a signature containing such a
+    rule is not mistaken for a quote — or, failing that, at a trailing block
+    of ``>`` lines.
+    """
+    sig_lines = {_fingerprint(ln) for ln in sig_text.split("\n") if ln.strip()}
+    lines = body.split("\n")
+    for i, ln in enumerate(lines):
+        if _TEXT_QUOTE_HEADER_RE.match(ln) and _fingerprint(ln) not in sig_lines:
+            return "\n".join(lines[:i]), "\n".join(lines[i:])
+    j = len(lines)
+    while j > 0 and (not lines[j - 1].strip() or _is_quoted_line(lines[j - 1])):
+        j -= 1
+    tail = lines[j:]
+    if any(_is_quoted_line(ln) for ln in tail) and "\n".join(lines[:j]).strip():
+        return "\n".join(lines[:j]), "\n".join(tail)
+    return body, ""
+
+
+def _html_quote_start(body_html: str) -> int | None:
+    m = _HTML_QUOTE_START_RE.search(body_html)
+    return m.start() if m else None
+
+
+def _strip_blockquotes(html: str) -> str:
+    previous = None
+    while previous != html:
+        previous = html
+        html = _BLOCKQUOTE_RE.sub(" ", html)
+    return html
+
+
+def _text_has_signature(own: str, sig_text: str) -> bool:
+    """Is ``sig_text`` in the caller's own text (quoted ``>`` lines excluded)?"""
+    def unquoted(s: str) -> str:
+        return "\n".join(ln for ln in s.split("\n") if not _is_quoted_line(ln))
+
+    own_fp = _fingerprint(unquoted(own))
+    sig_fp = _fingerprint(unquoted(sig_text))
     if not sig_fp:
         return True
     if len(sig_fp) >= _MIN_TEXT_FINGERPRINT:
-        return sig_fp in body_fp
+        return sig_fp in own_fp
     # Short signature: only the delimited form counts as "already there".
-    return _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in body_fp
+    return _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in own_fp
 
 
-def _html_has_signature(body_html: str, sig_html: str) -> bool:
-    sig_fp = _fingerprint(_html_visible_text(sig_html))
+def _html_has_signature(own_html: str, sig_html: str) -> bool:
+    """Is ``sig_html`` in the caller's own HTML (blockquotes excluded)?"""
+    sig_fp = _fingerprint(_html_visible_text(_strip_blockquotes(sig_html)))
     if len(sig_fp) >= _MIN_TEXT_FINGERPRINT:
-        return sig_fp in _fingerprint(_html_visible_text(body_html))
+        return sig_fp in _fingerprint(_html_visible_text(_strip_blockquotes(own_html)))
     # Image-only or near-empty signature: compare the markup itself.
-    return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", body_html)
+    return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", own_html)
 
 
 def _text_to_html_block(text: str) -> str:
@@ -232,14 +363,19 @@ def _text_to_html_block(text: str) -> str:
     return f'<div class="mail-mcp-signature">{lines}</div>'
 
 
-def _insert_html(body_html: str, block: str) -> str:
-    """Insert before the last ``</body>`` (found on the original string), else append."""
-    matches = list(_CLOSING_BODY_RE.finditer(body_html))
+def _insert_html(body_html: str, block: str, quote_start: int | None) -> str:
+    """Insert before the quoted message, else before the last ``</body>``, else append."""
     insertion = f"<br>\n{block}\n"
+    if quote_start is not None:
+        return body_html[:quote_start] + insertion + body_html[quote_start:]
+    matches = list(_CLOSING_BODY_RE.finditer(body_html))
     if matches:
         idx = matches[-1].start()
         return body_html[:idx] + insertion + body_html[idx:]
     return body_html + insertion
+
+
+# --- insertion -------------------------------------------------------------
 
 
 def apply_signature(
@@ -251,7 +387,8 @@ def apply_signature(
     has only one flavour, the other is derived (HTML → visible text, text →
     escaped HTML) so both alternatives stay consistent. The HTML part is only
     touched when the caller supplied one — a plain-text message is never
-    upgraded to HTML.
+    upgraded to HTML. In both parts the signature lands at the end of the
+    caller's own text, before any quoted message.
     """
     if not enabled:
         return SignedBody(body_text, body_html, STATUS_DISABLED)
@@ -259,21 +396,38 @@ def apply_signature(
         return SignedBody(body_text, body_html, STATUS_NONE)
 
     added = False
+    applicable = False
+
     sig_text = sig.text or normalize_text_signature(_html_visible_text(sig.html or ""))
     new_text = body_text
-    if sig_text and not _text_has_signature(body_text, sig_text):
-        head = body_text.rstrip()
-        new_text = (head + "\n\n" if head else "") + f"{TEXT_DELIMITER}\n{sig_text}\n"
-        added = True
+    if sig_text:
+        applicable = True
+        own, quoted = _split_text_quote(body_text, sig_text)
+        if not _text_has_signature(own, sig_text):
+            head = own.rstrip()
+            new_text = (head + "\n\n" if head else "") + f"{TEXT_DELIMITER}\n{sig_text}\n"
+            if quoted.strip():
+                new_text += "\n" + quoted.lstrip("\n")
+            added = True
 
     new_html = body_html
     if body_html:
         sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
-        if sig_html and not _html_has_signature(body_html, sig_html):
-            new_html = _insert_html(body_html, sig_html)
-            added = True
+        if sig_html:
+            applicable = True
+            quote_start = _html_quote_start(body_html)
+            own_html = body_html if quote_start is None else body_html[:quote_start]
+            if not _html_has_signature(own_html, sig_html):
+                new_html = _insert_html(body_html, sig_html, quote_start)
+                added = True
 
-    return SignedBody(new_text, new_html, STATUS_ADDED if added else STATUS_PRESENT)
+    if added:
+        status = STATUS_ADDED
+    elif applicable:
+        status = STATUS_PRESENT
+    else:
+        status = STATUS_NONE  # e.g. an image-only signature on a plain-text message
+    return SignedBody(new_text, new_html, status)
 
 
 def sign_body(

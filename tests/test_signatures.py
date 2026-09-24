@@ -16,6 +16,7 @@ from __future__ import annotations
 import email
 import email.policy
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -557,3 +558,171 @@ def test_add_account_keeps_signature_paths_on_overwrite(tmp_path, monkeypatch):
     acct = load(path).account("t")
     assert acct.smtp_port == 465
     assert acct.signature_text_path == ""
+
+
+# ---------- fixes from the adversarial review (2026-09-24) ----------
+
+needs_non_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions",
+)
+
+
+def test_relative_configured_path_is_anchored_to_config_dir(tmp_path, monkeypatch):
+    d = tmp_path / "signatures" / "shared"
+    d.mkdir(parents=True)
+    (d / "corp.txt").write_text(SIG_TEXT, encoding="utf-8")
+    cfg = _cfg(tmp_path, signature_text_path="signatures/shared/corp.txt")
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # the MCP server's CWD is not the config dir
+    assert load_signature(cfg, cfg.account()).text == SIG_TEXT
+
+
+def test_relative_path_cannot_escape_the_root(tmp_path):
+    (tmp_path / "secret.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "signatures").mkdir()
+    cfg = _cfg(tmp_path, signature_text_path="secret.txt")  # → <config dir>/secret.txt
+    with pytest.raises(ValidationError, match="must live under"):
+        load_signature(cfg, cfg.account())
+
+
+@needs_non_root
+def test_unreadable_file_is_a_validation_error_and_diagnostics_survive(tmp_path):
+    from mail_mcp.tools.read import get_account_info
+    from mail_mcp.tools.schemas import AccountInfoInput
+
+    d = _write_default(tmp_path)
+    os.chmod(d / "firma.txt", 0)
+    try:
+        cfg = _cfg(tmp_path)
+        with pytest.raises(ValidationError, match="not readable"):
+            load_signature(cfg, cfg.account())
+        info = get_account_info(cfg, AccountInfoInput(account="t"))
+        assert info["email"] == "me@example.com" and "error" in info["signature"]
+    finally:
+        os.chmod(d / "firma.txt", 0o644)
+
+
+@needs_non_root
+def test_unreadable_signature_directory_is_not_silently_unsigned(tmp_path):
+    d = _write_default(tmp_path)
+    os.chmod(d, 0)
+    try:
+        cfg = _cfg(tmp_path)
+        with pytest.raises(ValidationError):
+            sigmod.sign_body(cfg, cfg.account(), None, PLAIN, None)
+        assert "error" in sigmod.describe_signature(cfg, cfg.account())
+    finally:
+        os.chmod(d, 0o755)
+
+
+def test_symlink_loop_is_a_validation_error(tmp_path):
+    d = _write_default(tmp_path, html=None)
+    os.symlink("firma.html", d / "firma.html")  # points at itself
+    cfg = _cfg(tmp_path)
+    with pytest.raises(ValidationError):
+        load_signature(cfg, cfg.account())
+    assert "error" in sigmod.describe_signature(cfg, cfg.account())
+
+
+def test_fifo_is_rejected_without_blocking(tmp_path):
+    d = _write_default(tmp_path, html=None)
+    os.mkfifo(d / "firma.html")
+    cfg = _cfg(tmp_path)
+    with pytest.raises(ValidationError, match="regular file"):
+        load_signature(cfg, cfg.account())
+
+
+def test_suite_isolation_ignores_signatures_outside_tmp_path(tmp_path_factory):
+    """Configs outside the test's tmp_path (like the legacy Path('/tmp/x'))
+    must not pick up signatures planted next to them."""
+    foreign = tmp_path_factory.mktemp("foreign")
+    _write_default(foreign)
+    cfg = Config(path=foreign / "config.json", model=ConfigModel(accounts=[_account()]))
+    assert load_signature(cfg, cfg.account()) is None
+
+
+SIG_ONE_LINE = "Ada Lovelace · Analytical Engines"
+
+
+def test_signature_quoted_in_html_blockquote_does_not_count():
+    body_html = (
+        "<html><body><p>See you Tuesday.</p><blockquote><p>Charles wrote:</p>"
+        f"<p>Earlier text.</p>{SIG_HTML}</blockquote></body></html>"
+    )
+    out = apply_signature("See you Tuesday.", body_html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.count("sig-root") == 2  # the quoted one and the new one
+
+
+def test_outlook_plain_quote_gets_signature_before_the_separator():
+    body = (
+        "See you Tuesday.\n\n-----Original Message-----\nFrom: Charles\n\n"
+        "Earlier text.\n\n-- \n" + SIG_TEXT + "\n"
+    )
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.status == "added"
+    assert out.text.index("See you Tuesday.") < out.text.index("-- \nAda") \
+        < out.text.index("-----Original Message-----")
+    assert out.text.count("Ada Lovelace") == 2
+
+
+def test_gt_quoted_one_line_signature_does_not_count():
+    body = "Agreed.\n\n> On Monday Charles wrote:\n> Earlier text.\n> " + SIG_ONE_LINE + "\n"
+    out = apply_signature(body, None, Signature(None, SIG_ONE_LINE))
+    assert out.status == "added"
+    assert out.text.index("-- \n" + SIG_ONE_LINE) < out.text.index("> Earlier text.")
+
+
+def test_outlook_html_reply_gets_signature_before_divrplyfwdmsg():
+    body_html = (
+        '<html><body><div>Agreed.</div><div id="appendonsend"></div><hr>'
+        '<div id="divRplyFwdMsg"><b>From:</b> Charles</div>'
+        f"<div>Earlier text.{SIG_HTML}</div></body></html>"
+    )
+    out = apply_signature("Agreed.", body_html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    first_sig = out.html.index("sig-root")
+    assert out.html.index("Agreed.") < first_sig < out.html.index('id="appendonsend"')
+    assert out.html.count("sig-root") == 2
+
+
+def test_gmail_quote_marks_the_quote_start():
+    body_html = (
+        '<div>Agreed.</div><div class="gmail_quote gmail_quote_container">'
+        f"<div>On Mon, Charles wrote:</div><blockquote>{SIG_HTML}</blockquote></div>"
+    )
+    out = apply_signature("Agreed.", body_html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.html.index("sig-root") < out.html.index("gmail_quote")
+
+
+def test_signature_with_underscore_rule_is_still_idempotent():
+    sig_text = "Ada Lovelace\n____________________\nAnalytical Engines Ltd"
+    sig = Signature(None, sig_text)
+    once = apply_signature("Hello.", None, sig)
+    twice = apply_signature(once.text, None, sig)
+    assert twice.status == "already_present" and twice.text == once.text
+
+
+def test_reply_read_back_with_attribution_is_not_resigned():
+    body = "Agreed.\n\n-- \n" + SIG_TEXT + "\n\nOn Mon, 1 Jul 2026, Charles <c@example.org> wrote:\n"
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.status == "already_present" and out.text == body
+
+
+def test_table_signature_cells_do_not_run_together():
+    table = (
+        "<table><tr><td>Ada Lovelace</td><td>Director</td></tr>"
+        "<tr><td>Tel.</td><td>+44 20 0000 0000</td></tr></table>"
+    )
+    out = apply_signature("Hi.", None, Signature(table, None))
+    assert "Ada Lovelace Director" in out.text and "Tel. +44 20" in out.text
+    assert apply_signature(out.text, None, Signature(table, None)).status == "already_present"
+    # A hand-typed copy with the cells space-separated is recognised too.
+    typed = "Hi.\n\n-- \nAda Lovelace Director\nTel. +44 20 0000 0000\n"
+    assert apply_signature(typed, None, Signature(table, None)).status == "already_present"
+
+
+def test_image_only_signature_on_plain_message_reports_none():
+    out = apply_signature("Hi.", None, Signature('<img src="https://img.example.com/x.png">', None))
+    assert out.status == "none" and out.text == "Hi."

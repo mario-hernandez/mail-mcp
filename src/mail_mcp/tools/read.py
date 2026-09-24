@@ -219,7 +219,8 @@ def get_account_info(cfg: Config, params: AccountInfoInput) -> dict:
         "drafts_mailbox": acct.drafts_mailbox,
         "trash_mailbox": acct.trash_mailbox,
         # Whether the write tools will append a signature (html / text parts),
-        # or why they cannot. Never the content or the file paths.
+        # or why they cannot. Never the signature's content; an error message
+        # may name the offending path so the owner can fix it.
         "signature": describe_signature(cfg, acct),
         "is_default": acct.alias == cfg.model.default_alias,
     }
