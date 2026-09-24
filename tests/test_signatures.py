@@ -951,3 +951,127 @@ def test_french_outlook_desktop_div_with_nbsp_label():
     out = apply_signature("Parfait.", html, Signature(SIG_HTML, SIG_TEXT))
     assert out.status == "added"
     assert out.html.index("sig-root") < out.html.index("border-top")
+
+
+# ---------- round 4 of the review: nested client quotes, Gmail, Word bookmarks ----------
+
+GMAIL_QUOTE = (
+    '<div class="gmail_quote gmail_quote_container"><div dir="ltr" class="gmail_attr">'
+    "El mar, 22 sept 2026, Ada escribió:<br></div>"
+    '<blockquote class="gmail_quote">Te propongo reunión.</blockquote></div>'
+)
+OWA_QUOTE = (
+    '<div id="appendonsend"></div><hr style="display:inline-block;width:98%">'
+    '<div id="divRplyFwdMsg"><b>From:</b> Ada</div><div>Earlier text.</div>'
+)
+
+
+def _apple_reply(inner: str) -> str:
+    return (
+        '<html><body>Perfecto, el jueves.<div><br><blockquote type="cite">'
+        "<div>On 23 Sep 2026, at 18:02, Ana &lt;ana@example.com&gt; wrote:</div>"
+        f'<div><div dir="ltr">¿Te va bien el jueves?</div><br>{inner}</div>'
+        "</blockquote></div><br></body></html>"
+    )
+
+
+@pytest.mark.parametrize("inner", [GMAIL_QUOTE, OWA_QUOTE], ids=["gmail", "owa"])
+def test_apple_mail_reply_quoting_a_gmail_or_owa_message(inner):
+    out = apply_signature("Perfecto, el jueves.", _apple_reply(inner), Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index('<blockquote type="cite"')
+
+
+def test_apple_mail_quote_of_own_owa_signed_message_still_signs():
+    inner = OWA_QUOTE.replace("Earlier text.", f"Earlier text.{SIG_HTML}")
+    out = apply_signature("x", _apple_reply(inner), Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index('<blockquote type="cite"')
+
+
+def test_thunderbird_top_post_quoting_an_owa_message():
+    html = (
+        "<html><body><p>Agreed.</p>"
+        '<div class="moz-cite-prefix">On 23/09/2026 18:02, Ana wrote:<br></div>'
+        f'<blockquote type="cite" cite="mid:x@example.com">{OWA_QUOTE}</blockquote></body></html>'
+    )
+    out = apply_signature("Agreed.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.html.index("Agreed.") < out.html.index("sig-root") < out.html.index("moz-cite-prefix")
+
+
+def test_thunderbird_bottom_post_quoting_a_gmail_message():
+    html = (
+        '<html><body><div class="moz-cite-prefix">On 23/09/2026 18:02, Ana wrote:<br></div>'
+        f'<blockquote type="cite">{GMAIL_QUOTE}</blockquote><p>Agreed.</p></body></html>'
+    )
+    out = apply_signature("Agreed.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.html.index("Agreed.") < out.html.index("sig-root")
+    assert out.html.index("sig-root") > out.html.index("</blockquote>")
+
+
+def test_gmail_reply_with_signature_below_the_quote_is_not_resigned():
+    html = (
+        f"<div>Vale.</div><br>{GMAIL_QUOTE}"
+        f'<br clear="all"><div class="gmail_signature">{SIG_HTML}</div>'
+    )
+    text = "Vale.\n\n-- \n" + SIG_TEXT + "\n"
+    out = apply_signature(text, html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "already_present"
+    assert out.html.count("sig-root") == 1 and out.text.count("Ada Lovelace") == 1
+
+
+def test_gmail_quote_containing_old_signature_still_signs():
+    quote = GMAIL_QUOTE.replace("Te propongo reunión.", f"Te propongo reunión.{SIG_HTML}")
+    out = apply_signature("Vale.", f"<div>Vale.</div>{quote}", Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("gmail_quote")
+
+
+def test_owa_quote_containing_owner_signature_still_signs():
+    html = "<div>Merci.</div>" + OWA_QUOTE.replace("Earlier text.", f"Earlier text.{SIG_HTML}")
+    out = apply_signature("Merci.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("appendonsend")
+
+
+@pytest.mark.parametrize("header", [
+    '<a name="_MailOriginal"><b><span lang="ES">De:</span></b></a><span lang="ES"> Ana</span>',
+    '<a name="_____replyseparator"></a><b>From:</b> Ana',
+    "<b>Von:</b> Ana",
+])
+def test_outlook_desktop_word_bookmarks_before_the_label(header):
+    html = (
+        "<html><body><p>Perfecto.</p>"
+        '<div style="border:none;border-top:solid #B5C4DF 1.0pt;padding:3.0pt 0cm 0cm 0cm">'
+        f'<p class="MsoNormal">{header}</p></div><p>Original.</p>{SIG_HTML}</body></html>'
+    )
+    out = apply_signature("Perfecto.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("border-top")
+
+
+def test_link_followed_by_from_label_in_prose_is_not_a_quote():
+    html = '<p>Mira <a href="https://example.org">esto</a></p><p>From: el equipo</p>'
+    assert sigmod._html_quote_start(html) is None
+
+
+@pytest.mark.parametrize("rebuilt", [
+    "<p>Hola Ana,</p><p>Te confirmo el viernes.</p><p>-- <br>Mario Hernández</p>",
+    "Hola Ana,<br><br>Te confirmo el viernes.<br><br>-- <br>Mario Hernández<br>",
+])
+def test_short_signature_html_rebuilt_from_signed_text_is_not_resigned(rebuilt):
+    sig = Signature(None, "Mario Hernández")
+    first = apply_signature(
+        "Hola Ana,\n\nTe confirmo el viernes.", "<p>Hola Ana,</p><p>Te confirmo el viernes.</p>", sig,
+    )
+    again = apply_signature(first.text, rebuilt, sig)
+    assert again.status == "already_present" and again.html.count("Mario Hernández") == 1
+
+
+def test_different_flavours_html_rebuilt_from_text_is_not_resigned():
+    sig = Signature(SIG_HTML + "<p>Data protection notice: long legal text here.</p>", SIG_TEXT)
+    first = apply_signature(PLAIN, None, sig)  # text-only draft
+    rebuilt = "<p>" + first.text.replace("\n", "<br>") + "</p>"  # agent upgrades it to HTML
+    again = apply_signature(first.text, rebuilt, sig)
+    assert again.status == "already_present"
+    assert again.html.count("Ada Lovelace") == 1

@@ -88,7 +88,7 @@ _HTML_QUOTE_MARKER_RE = re.compile(
     r"(?:divRplyFwdMsg|appendonsend|stopSpelling|gmail_quote|yahoo_quoted"
     r"|OutlookMessageHeader|mail-editor-reference-message-container|moz-forward-container)"
     r"|<div\b[^>]*\bborder-top\s*:\s*solid\s+#(?:E1E1E1|B5C4DF)\b[^>]*>"
-    r"(?=(?:\s|<(?:p|span|font|b|strong)\b[^>]*>)*"
+    r"(?=(?:\s|<(?:p|span|font|b|strong|a)\b[^>]*>|</a\s*>)*"
     r"(?:from|de|von|da|van|exp[ée]diteur)(?:\s|&nbsp;|&#160;|\xa0)*:)",
     re.IGNORECASE,
 )
@@ -99,6 +99,8 @@ _HTML_CITE_RE = re.compile(r"<blockquote\b[^>]*\btype\s*=\s*[\"']?cite", re.IGNO
 _HTML_CITE_PREFIX_RE = re.compile(
     r"<div\b[^>]*\bclass\s*=\s*[\"']?[^\"'>]*moz-cite-prefix", re.IGNORECASE,
 )
+_BQ_TAG_RE = re.compile(r"<(/?)blockquote\b[^>]*>", re.IGNORECASE)
+_DIV_TAG_RE = re.compile(r"<(/?)div\b[^>]*>", re.IGNORECASE)
 # Exactly one <div>…</div> (no nested div, no quote) followed only by whitespace.
 _SINGLE_DIV_RE = re.compile(
     r"<div\b[^>]*>(?:(?!<div\b|<blockquote\b).)*?</div\s*>\s*", re.IGNORECASE | re.DOTALL,
@@ -369,9 +371,64 @@ def _split_text_quote(body: str, sig_text: str) -> tuple[str, str]:
     return "\n".join(lines[:start]), "\n".join(lines[start:])
 
 
+def _mask_quoted(html: str) -> str:
+    """Same-length copy with the INSIDE of every top-level blockquote blanked.
+
+    A reply from Apple Mail or Thunderbird quotes, inside its own
+    ``<blockquote type="cite">``, a message that carries its own Gmail or
+    Outlook quote markers; those nested markers must not be taken for where
+    the caller's quote starts. Opening tags stay visible; an unclosed
+    blockquote is left as is.
+    """
+    out = list(html)
+    depth = 0
+    inner_start = 0
+    for m in _BQ_TAG_RE.finditer(html):
+        if m.group(1):
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0:
+                out[inner_start:m.start()] = " " * (m.start() - inner_start)
+        else:
+            if depth == 0:
+                inner_start = m.end()
+            depth += 1
+    return "".join(out)
+
+
+def _balanced_div_end(html: str, start: int) -> int | None:
+    """End offset of the ``<div>`` opening at ``start`` (its matching close)."""
+    depth = 0
+    for m in _DIV_TAG_RE.finditer(html, start):
+        depth += -1 if m.group(1) else 1
+        if depth == 0:
+            return m.end()
+    return None
+
+
+def _own_html_for_dedup(body_html: str, quote_start: int | None) -> str:
+    """The caller's own HTML, for the "already signed?" check.
+
+    Everything before the quote; plus, when the quote is Gmail's
+    ``div.gmail_quote`` container, whatever follows that container — Gmail
+    puts the sender's signature BELOW the quote by default. Not done for
+    Outlook's markers: what follows them is the quoted message itself.
+    """
+    if quote_start is None:
+        return body_html
+    own = body_html[:quote_start]
+    opening = re.match(r"<div\b[^>]*>", body_html[quote_start:], re.IGNORECASE)
+    if opening and re.search(r"\bgmail_quote\b", opening.group(0), re.IGNORECASE):
+        end = _balanced_div_end(body_html, quote_start)
+        if end is not None:
+            own += body_html[end:]
+    return own
+
+
 def _html_quote_start(body_html: str) -> int | None:
     """Offset where the quoted message starts in ``body_html``, or ``None``."""
-    marker = _HTML_QUOTE_MARKER_RE.search(body_html)
+    marker = _HTML_QUOTE_MARKER_RE.search(_mask_quoted(body_html))
     limit = marker.start() if marker else len(body_html)
     for cite in _HTML_CITE_RE.finditer(body_html, 0, limit):
         after = _strip_blockquotes(body_html[cite.start():limit])
@@ -411,11 +468,25 @@ def _text_has_signature(own: str, sig_text: str) -> bool:
     return _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in own_fp
 
 
-def _html_has_signature(own_html: str, sig_html: str) -> bool:
-    """Is ``sig_html`` in the caller's own HTML (blockquotes excluded)?"""
+def _html_has_signature(own_html: str, sig_html: str, sig_text: str | None = None) -> bool:
+    """Is the signature in the caller's own HTML (blockquotes excluded)?
+
+    Matched on the HTML signature's visible text, or on the text flavour —
+    an HTML body rebuilt by the agent from a signed plain-text body carries
+    "-- <br>Name", which must count too.
+    """
+    own_fp = _fingerprint(_html_visible_text(_strip_blockquotes(own_html)))
     sig_fp = _fingerprint(_html_visible_text(_strip_blockquotes(sig_html)))
+    if len(sig_fp) >= _MIN_TEXT_FINGERPRINT and sig_fp in own_fp:
+        return True
+    if sig_text:
+        text_fp = _fingerprint(sig_text)
+        if len(text_fp) >= _MIN_TEXT_FINGERPRINT and text_fp in own_fp:
+            return True
+        if text_fp and _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in own_fp:
+            return True
     if len(sig_fp) >= _MIN_TEXT_FINGERPRINT:
-        return sig_fp in _fingerprint(_html_visible_text(_strip_blockquotes(own_html)))
+        return False  # never fall back to raw markup: it would see inside blockquotes
     # Image-only or near-empty signature: compare the markup itself.
     return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", own_html)
 
@@ -478,8 +549,8 @@ def apply_signature(
         if sig_html:
             applicable = True
             quote_start = _html_quote_start(body_html)
-            own_html = body_html if quote_start is None else body_html[:quote_start]
-            if not _html_has_signature(own_html, sig_html):
+            own_html = _own_html_for_dedup(body_html, quote_start)
+            if not _html_has_signature(own_html, sig_html, sig_text):
                 new_html = _insert_html(body_html, sig_html, quote_start)
                 added = True
 
