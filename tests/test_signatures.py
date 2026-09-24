@@ -668,7 +668,10 @@ def test_outlook_plain_quote_gets_signature_before_the_separator():
 
 
 def test_gt_quoted_one_line_signature_does_not_count():
-    body = "Agreed.\n\n> On Monday Charles wrote:\n> Earlier text.\n> " + SIG_ONE_LINE + "\n"
+    body = (
+        "Agreed.\n\n> On Mon, 1 Jul 2026, Charles <c@example.org> wrote:\n"
+        "> Earlier text.\n> " + SIG_ONE_LINE + "\n"
+    )
     out = apply_signature(body, None, Signature(None, SIG_ONE_LINE))
     assert out.status == "added"
     assert out.text.index("-- \n" + SIG_ONE_LINE) < out.text.index("> Earlier text.")
@@ -726,3 +729,135 @@ def test_table_signature_cells_do_not_run_together():
 def test_image_only_signature_on_plain_message_reports_none():
     out = apply_signature("Hi.", None, Signature('<img src="https://img.example.com/x.png">', None))
     assert out.status == "none" and out.text == "Hi."
+
+
+# ---------- round 2 of the review: precision of quote detection ----------
+
+@pytest.mark.parametrize("line", [
+    "El proveedor nos escribió:",
+    "Le client a écrit :",
+    "On Monday the client wrote:",
+    "Il cliente ha scritto:",
+    "Am Montag schrieb der Kunde:",
+    "El 3 de agosto el proveedor nos escribió:",
+    "____________________",
+])
+def test_prose_that_looks_like_a_header_does_not_move_the_signature(line):
+    body = f"Hola Ana,\n\n{line}\n\n«No podemos entregar antes del día 15.»\n\n¿Aceptamos?\n"
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.text.rstrip().endswith(SIG_TEXT.split("\n")[-1])
+    assert out.text.index("¿Aceptamos?") < out.text.index("-- \n")
+    again = apply_signature(out.text, None, Signature(None, SIG_TEXT))
+    assert again.status == "already_present" and again.text == out.text
+
+
+def test_message_starting_with_such_a_line_never_starts_with_delimiter():
+    body = "El cliente escribió:\n«Lo necesitamos el viernes.»\n\nSí, llegamos.\n"
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert not out.text.startswith("-- ")
+    assert out.text.index("Sí, llegamos.") < out.text.index("-- \n")
+
+
+def test_trailing_quoted_clause_in_a_new_message_stays_in_place():
+    body = "Te copio la cláusula:\n\n> La entrega será el día 15.\n"
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.text.index("> La entrega") < out.text.index("-- \n")
+
+
+def test_interleaved_html_cites_keep_signature_at_the_end_in_both_parts():
+    text = "Hola Ana:\n\n> ¿Viernes?\nSí.\n\n> ¿Presupuesto?\nMañana.\n"
+    html = (
+        '<html><body><p>Hola Ana:</p><blockquote type="cite">¿Viernes?</blockquote>'
+        '<p>Sí.</p><blockquote type="cite">¿Presupuesto?</blockquote><p>Mañana.</p></body></html>'
+    )
+    out = apply_signature(text, html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.html.index("Mañana.") < out.html.index("sig-root")
+    assert out.text.index("Mañana.") < out.text.index("-- \n")
+
+
+def test_inline_cite_added_above_an_existing_signature_is_not_resigned():
+    sig = Signature(SIG_HTML, SIG_TEXT)
+    first = apply_signature("Hola\n", "<html><body><p>Hola</p></body></html>", sig)
+    edited_html = first.html.replace(
+        "<p>Hola</p>", '<p>Hola</p><blockquote type="cite">¿Viernes?</blockquote><p>Sí.</p>',
+    )
+    edited_text = first.text.replace("Hola\n", "Hola\n\n> ¿Viernes?\nSí.\n", 1)
+    again = apply_signature(edited_text, edited_html, sig)
+    assert again.status == "already_present"
+    assert again.html.count("sig-root") == 1 and again.text.count("Ada Lovelace") == 1
+
+
+def test_trailing_cite_is_still_the_quote():
+    html = (
+        '<html><body><p>Agreed.</p><blockquote type="cite"><p>Earlier.</p>'
+        f"{SIG_HTML}</blockquote></body></html>"
+    )
+    out = apply_signature("Agreed.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index('type="cite"')
+
+
+@pytest.mark.parametrize("header", [
+    "De: Ana García <ana@example.org>\nEnviado el: lunes, 1 de julio de 2026 10:00\n"
+    "Para: Ada <ada@example.com>\nAsunto: Presupuesto",
+    "From: Ana <ana@example.org>\nSent: Monday, July 1, 2026 10:00 AM\n"
+    "To: Ada <ada@example.com>\nSubject: Quote",
+    "From: Ana <ana@example.org>\nDate: Monday, 1 July 2026 at 10:00\n"
+    "To: Ada <ada@example.com>\nSubject: Quote",
+    "________________________________\nDe: Ana <ana@example.org>\nEnviado: lunes\nAsunto: x",
+])
+def test_outlook_desktop_text_header_block_is_the_quote(header):
+    body = f"Perfecto, nos vemos.\n\n{header}\n\nTexto anterior.\n\n-- \n{SIG_TEXT}\n"
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.status == "added"
+    assert out.text.index("-- \nAda") < out.text.index(header.split("\n")[0])
+
+
+def test_from_and_date_without_subject_is_not_a_quote():
+    body = "Datos del envío:\nDe: almacén central\nFecha: 15 de julio\n\nGracias.\n"
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.text.index("Gracias.") < out.text.index("-- \n")
+
+
+def test_outlook_desktop_html_quote_div_is_the_quote():
+    html = (
+        "<html><body><p>Perfecto.</p>"
+        '<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm">'
+        '<p class="MsoNormal"><b><span lang="ES">De:</span></b><span lang="ES"> Ana</span></p></div>'
+        f"<p>Texto anterior.</p>{SIG_HTML}</body></html>"
+    )
+    out = apply_signature("Perfecto.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("border-top")
+
+
+def test_gmail_wrapped_attribution_in_text():
+    body = (
+        "Vale.\n\nEl lun, 1 jul 2026 a las 10:00, Ana (<ana@example.org>)\nescribió:\n\n"
+        "> ¿Te va bien?\n"
+    )
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.text.index("-- \n") < out.text.index("El lun, 1 jul")
+
+
+def test_bom_in_signature_files_is_dropped(tmp_path):
+    d = _write_default(tmp_path, html=None, text=None)
+    (d / "firma.txt").write_bytes(b"\xef\xbb\xbf-- \r\nAda Lovelace\r\nAnalytical Engines Ltd\r\n")
+    (d / "firma.html").write_bytes(b"\xef\xbb\xbf" + SIG_HTML.encode())
+    cfg = _cfg(tmp_path)
+    sig = load_signature(cfg, cfg.account())
+    out = apply_signature("Hi.", "<p>Hi.</p>", sig)
+    assert out.text.count("--") == 1 and chr(0xFEFF) not in out.text
+    assert chr(0xFEFF) not in out.html
+
+
+def test_unknown_user_home_in_path_is_a_validation_error(tmp_path):
+    (tmp_path / "signatures").mkdir()
+    cfg = _cfg(tmp_path, signature_text_path="~no-such-user-zz9/firma.txt")
+    with pytest.raises(ValidationError):
+        load_signature(cfg, cfg.account())
+
+
+def test_cells_without_end_tags_are_separated():
+    out = apply_signature("Hi.", None, Signature("<table><tr><td>Ada<td>Director</table>", None))
+    assert "Ada Director" in out.text
