@@ -59,9 +59,12 @@ layering more surface.
   confirmation UX; revisit together with the multi-account audit log.
 - **Base64 inline attachments** — wait until there is a use case we
   cannot satisfy with disk paths (there isn't one today).
-- **Priority headers, explicit `reply_to`, signatures, per-identity
-  `from_alias`** — tied to the identity model refactor; best done in one
-  coherent breaking v0.3 rather than dripped in.
+- **Priority headers, explicit `reply_to`, per-identity `from_alias`** —
+  tied to the identity model refactor; best done in one coherent breaking
+  v0.3 rather than dripped in. *(Signatures were split out and shipped
+  per account, without the identity model, in v0.6.0 — additive
+  `signature_html_path` / `signature_text_path` fields, no loader
+  migration. Per-identity signatures remain part of the identity model.)*
 
 ## Defer to v0.3 (breaking changes)
 

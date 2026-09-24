@@ -70,6 +70,7 @@ Mitigations:
 
 - `safe_join` anchors every write to the download root and rejects `..` and absolute paths.
 - Batch operations are capped at 100 UIDs per call; destructive batch deletion requires explicit confirmation.
+- Account signatures are read from disk and embedded in every outgoing message, which would make a mis-pointed path an exfiltration channel. The path never comes from a tool argument (the LLM only gets the boolean `include_signature`), and every signature path — configured or default — must resolve, symlinks followed, to a regular file inside `~/.config/mail-mcp/signatures/`, at most 64 KiB, valid UTF-8. The signature HTML itself is trusted owner content and is inserted verbatim.
 
 ### 6. A supply-chain attack on dependencies
 

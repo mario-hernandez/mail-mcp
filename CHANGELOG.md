@@ -7,16 +7,97 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [0.6.0] — 2026-09-24
+
+Account signatures, and SMTP that works with Microsoft 365 accounts whose
+address is not the sign-in name. Both are additive: a config without the new
+fields behaves exactly as before.
+
 ### Added
+- **Per-account signatures** on `save_draft`, `reply_draft`, `forward_draft`,
+  `update_draft` (when the body is replaced) and `send_email`. Each account
+  may have an HTML and/or a plain-text signature, read from
+  `signature_html_path` / `signature_text_path` or, by default, from
+  `~/.config/mail-mcp/signatures/<alias>/firma.html` and `firma.txt` — no
+  file, no signature; `""` switches a part off; relative paths are taken
+  relative to the config directory. The signature goes after the
+  caller's text and **before the reply quote**, as Outlook places it: the text
+  one after a `-- ` line in `body`, the HTML one verbatim before `</body>` in
+  `body_html` (never parsed or rewritten; remote images stay remote). A
+  plain-text message is never upgraded to HTML; when only one flavour exists
+  the other is derived so both alternatives agree. The signature always ends
+  the caller's own text: before a quote that a mail client generated
+  (Outlook web/desktop/Mac, Gmail, Apple Mail/Thunderbird final
+  `<blockquote type="cite">`, "-----Original Message-----"…), and at the very
+  end otherwise — `>` quotes, bottom-posted and interleaved replies are the
+  caller's own text and never move it. Only such client-generated structures
+  count as a quote, never prose ("El cliente escribió:" or a memo with
+  De:/Para:/Asunto: stays in the message). It is never added twice: an own
+  part that already contains it is left alone, so resubmitting a body read
+  back from a signed draft is safe — while a signature that only appears
+  inside a quote (the owner's earlier message) does not count, so replies are
+  still signed. New per-call `include_signature`
+  (default on when the account has one; `false` skips it). Responses report
+  `"signature": "added" | "already_present" | "disabled" | "none"`.
+- `forward_draft` accepts `comment_html` (same `multipart/alternative` build as
+  `body_html`), so forwards can carry the rich signature.
+- `get_account_info` reports whether an account has a signature
+  (`{"html": …, "text": …}`, or the reason it cannot be loaded) — never its
+  content or file paths. `doctor` prints the same per account.
 - Optional `smtp_username` on each account: the SMTP login identity when it
   differs from `email`. Microsoft 365 accepts SMTP AUTH only as the signed-in
   user's UPN (e.g. `name@tenant.onmicrosoft.com`), so accounts whose address is
   on a custom domain, or shared mailboxes sent through a delegate with Send As,
   failed with `535 5.7.3`. IMAP and the `From` header keep using `email`.
   Set it with `mail-mcp add-account … --smtp-username <upn>` or by editing the
-  config; `init` and `add-account` keep an existing value when overwriting an
-  alias. `doctor` and `get_account_info` show the SMTP user. See
+  config. `doctor` and `get_account_info` show the SMTP user. See
   `docs/OAUTH_MICROSOFT.md`.
+
+### Changed
+- Re-running `init` or `add-account` on an existing alias keeps every
+  hand-set optional field — `smtp_username` and both signature paths — instead
+  of silently dropping them.
+- Dependency pin `mcp>=1.2.0,<2`: `mcp` 2.x is a new major line and a fresh
+  install would otherwise pull it.
+
+### Security
+- Signature files are the owner's content and are inserted unmodified, but
+  every path — configured or default — must resolve, symlinks followed, to a
+  regular file inside `~/.config/mail-mcp/signatures/`, be at most 64 KiB and
+  decode as UTF-8. Paths never come from tool arguments; the only per-call
+  control is the boolean `include_signature`. The file is opened without
+  following a final symlink and checked on the open descriptor, so a swap after
+  the containment check or a FIFO cannot slip through or hang the server. Any
+  problem reading a signature raises `VALIDATION_ERROR` before anything is
+  saved or sent — never a crash, never a silently unsigned message.
+
+### Fixed
+- HTML-to-text rendering (used by `get_email` for HTML-only messages and for
+  derived signatures) separates table cells instead of gluing them together
+  (`Name</td><td>Title` → `Name Title`).
+
+## [0.5.0] — 2026-07-29
+
+### Added
+- **HTML bodies.** `body_html` on `save_draft`, `send_email`, `reply_draft` and
+  `update_draft` builds `multipart/alternative` with `body` as the text/plain
+  fallback (plain first, html last, per RFC 2046); attachments wrap it in
+  `multipart/mixed`. `reply_draft` appends the attribution quote to both
+  alternatives, HTML-escaped in the html one. `update_draft` preserves both
+  alternatives of a plain+html draft on partial updates.
+- `html_warning` in write-tool responses when `body` looks like a full HTML
+  document and `body_html` was not used — the case that used to deliver raw
+  markup with no error anywhere.
+
+### Fixed
+- Found by the adversarial review of the feature before release: the reply
+  quote was inserted mid-tag when the HTML contained `İ` (U+0130: `str.lower()`
+  is not length-preserving); `update_draft` crashed with `LookupError` on a
+  draft whose HTML part declares an unknown charset; carried-over inline images
+  lost their `Content-ID` (broken `cid:` references); `body_html=""` silenced
+  `html_warning`.
 
 ## [0.4.2] — 2026-05-27
 
