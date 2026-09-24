@@ -8,7 +8,7 @@ import getpass
 import sys
 
 from . import __version__
-from .config import AccountModel, ConfigModel, load, save
+from .config import AccountModel, ConfigModel, load, preserved_account_fields, save
 from .keyring_store import get_password, get_refresh_token, set_password
 from .server import run_stdio
 
@@ -60,11 +60,12 @@ def _cmd_add_account(args: argparse.Namespace) -> int:
     # Build and validate the account model BEFORE touching the keyring, so a
     # bad host/port/alias fails without leaving an orphan secret the user
     # can't see (the config is the only place that references the alias).
-    # ``--smtp-username`` sets the SMTP login identity; when omitted on an
-    # existing alias we keep the previous value instead of silently dropping it.
-    smtp_username = args.smtp_username or next(
-        (a.smtp_username for a in cfg.model.accounts if a.alias == args.alias), None
-    )
+    # Hand-set optional fields (SMTP login identity, signature paths) survive
+    # re-running add-account on an existing alias; ``--smtp-username`` wins
+    # over the previous value when given.
+    preserved = preserved_account_fields(cfg, args.alias)
+    if args.smtp_username:
+        preserved["smtp_username"] = args.smtp_username
     account = AccountModel(
         alias=args.alias,
         email=args.email,
@@ -76,7 +77,7 @@ def _cmd_add_account(args: argparse.Namespace) -> int:
         smtp_starttls=args.smtp_starttls,
         drafts_mailbox=args.drafts_mailbox,
         trash_mailbox=args.trash_mailbox,
-        smtp_username=smtp_username,
+        **preserved,
     )
     # Snapshot any pre-existing secret for this alias/email so a failed save
     # can be rolled back WITHOUT destroying a credential that was already

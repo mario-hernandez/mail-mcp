@@ -17,7 +17,7 @@ from typing import Any
 
 from . import autoconfig, imap_client, smtp_client
 from .autoconfig import Discovery, DiscoveryError, ServerSpec
-from .config import AccountModel, ConfigModel, load, save
+from .config import AccountModel, ConfigModel, load, preserved_account_fields, save
 from .credentials import AuthCredential
 from .keyring_store import (
     delete_password,
@@ -155,14 +155,13 @@ def run() -> int:
         ).ask()
         if not overwrite:
             return _cancelled(console)
-    # Overwriting an alias must not silently drop a hand-set ``smtp_username``
-    # (the SMTP login identity, e.g. a Microsoft 365 UPN): carry it over so the
-    # pre-save SMTP test and the saved account both keep using it.
-    prev_smtp_username = next(
-        (a.smtp_username for a in cfg.model.accounts if a.alias == alias), None
-    )
-    if prev_smtp_username:
-        console.print(f"  [dim]keeping smtp_username: {prev_smtp_username}[/dim]")
+    # Overwriting an alias must not silently drop hand-set optional fields —
+    # the SMTP login identity (e.g. a Microsoft 365 UPN) or the signature
+    # paths: carry them over so the pre-save SMTP test and the saved account
+    # both keep using them.
+    preserved = preserved_account_fields(cfg, alias)
+    for name, value in preserved.items():
+        console.print(f"  [dim]keeping {name}: {value!r}[/dim]")
 
     if use_oauth:
         return _finish_oauth_microsoft(
@@ -173,7 +172,7 @@ def run() -> int:
             alias=alias,
             disc=disc,
             cfg=cfg,
-            smtp_username=prev_smtp_username,
+            preserved=preserved,
         )
 
     password = questionary.password(
@@ -197,7 +196,7 @@ def run() -> int:
         smtp_host=disc.smtp.host,
         smtp_port=disc.smtp.port,
         smtp_starttls=(disc.smtp.security == "starttls"),
-        smtp_username=prev_smtp_username,
+        **preserved,
     )
 
     imap_ok, imap_err, specials = _test_imap(console, account, password)
@@ -449,7 +448,7 @@ def _finish_oauth_microsoft(
     alias: str,
     disc: Discovery,
     cfg: Any,
-    smtp_username: str | None = None,
+    preserved: dict[str, Any] | None = None,
 ) -> int:
     """Run the OAuth flow: prompt IDs, browser, verify, save.
 
@@ -538,7 +537,7 @@ def _finish_oauth_microsoft(
         auth="oauth-microsoft",
         oauth_client_id=client_id,
         oauth_tenant=tenant,
-        smtp_username=smtp_username,
+        **(preserved or {}),
     )
 
     # Verify the fresh access token actually works for IMAP and SMTP before

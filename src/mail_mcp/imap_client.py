@@ -1000,12 +1000,19 @@ class _HTMLTextExtractor(HTMLParser):
             # Mirror handle_data: a <br> inside <script>/<style>/<head>/<title>
             # must not leak a stray newline into the rendered text.
             self._buf.append("\n")
+        elif tag in ("td", "th") and not self._skip_depth:
+            # Also on the start tag: cells are often written without </td>.
+            self._buf.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
         elif tag in self._BLOCK_TAGS and not self._skip_depth:
             self._buf.append("\n")
+        elif tag in ("td", "th") and not self._skip_depth:
+            # Separate adjacent cells ("Name</td><td>Title" must not render
+            # as "NameTitle"); get_text() collapses the extra whitespace.
+            self._buf.append(" ")
 
     def handle_data(self, data: str) -> None:
         if not self._skip_depth:

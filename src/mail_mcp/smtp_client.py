@@ -351,6 +351,7 @@ def build_forward_message(
     comment: str = "",
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    comment_html: str | None = None,
 ) -> tuple[EmailMessage, list[str]]:
     """Assemble a forward: original attached as ``message/rfc822``, never
     re-parsed into the message body.
@@ -360,6 +361,8 @@ def build_forward_message(
     message/rfc822``, which mail clients render as a forwarded message the
     user can unfold. This mirrors Thunderbird's "forward as attachment" and
     is the XPIA-safe forward pattern from :mod:`thegreystone/mcp-email`.
+    ``comment_html`` makes the body ``multipart/alternative`` exactly like
+    ``body_html`` does in :func:`build_message`.
     """
     subject_raw = original_headers.get("Subject", "") or ""
     subject = subject_raw if subject_raw.lower().startswith(("fwd:", "fw:")) else f"{FWD_PREFIX}{subject_raw}".strip()
@@ -370,6 +373,7 @@ def build_forward_message(
         bcc=bcc,
         subject=subject,
         body_text=comment or "",
+        body_html=comment_html,
     )
     original = email.message_from_bytes(original_raw, policy=email.policy.default)
     filename = _sanitize_attachment_name(original_headers.get("Subject") or "forwarded-message") + ".eml"

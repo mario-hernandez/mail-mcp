@@ -133,6 +133,10 @@ DRAFTS (always enabled — preferred write path):
   - save_draft, reply_draft, forward_draft, update_draft
   - A draft lands in the user's Drafts mailbox; they review and send from
     their own mail client. Prefer drafts over send_email.
+  - Signatures: if the account has one (get_account_info → signature), the
+    write tools append it automatically after your text and before any
+    reply quote. Do NOT type a sign-off block yourself; pass body_html to
+    get the rich HTML signature, include_signature=false to omit it.
 
 DESTRUCTIVE (registered only when MAIL_MCP_WRITE_ENABLED=true):
   - create_folder, rename_folder, delete_folder
@@ -332,7 +336,8 @@ def build_server(cfg: Config | None = None) -> Server:
                     "Preferred write path — the human reviews the draft in "
                     "their own email client before sending. For rich/formatted "
                     "email pass the HTML in body_html (with a plain-text "
-                    "version in body); HTML placed in body ships as raw text."
+                    "version in body); HTML placed in body ships as raw text. "
+                    "The account's signature is appended automatically."
                 ),
                 inputSchema=SaveDraftInput.model_json_schema(),
                 annotations={"readOnlyHint": False, "destructiveHint": False},

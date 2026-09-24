@@ -121,6 +121,17 @@ class SaveDraftInput(_AccountScoped):
             "(added as envelope recipients, never as a header)."
         ),
     )
+    include_signature: bool | None = Field(
+        default=None,
+        description=(
+            "Append the account's signature (configured per account; see "
+            "get_account_info → signature). Default: on when the account has "
+            "one. The HTML signature goes into body_html and the text one, "
+            "after a '-- ' line, into body — pass body_html to get the rich "
+            "signature. Never added twice if the body already contains it. "
+            "Pass false to send without it."
+        ),
+    )
     in_reply_to: str | None = None
     references: list[str] | None = None
     attachments: list[AttachmentSpec] | None = Field(
@@ -239,6 +250,14 @@ class UpdateDraftInput(_AccountScoped):
             "explicitly clear all attachments."
         ),
     )
+    include_signature: bool | None = Field(
+        default=None,
+        description=(
+            "Only used when body is replaced: append the account's signature "
+            "to the new body (default: on when the account has one; never "
+            "added twice). A preserved body is left exactly as it was."
+        ),
+    )
     preserve_message_id: bool = Field(
         default=True,
         description="Keep the original Message-ID so threaded replies still reference it.",
@@ -283,6 +302,14 @@ class ReplyDraftInput(_AccountScoped):
         default=True,
         description="Prefix the draft with a 'On <date>, <sender> wrote:' attribution.",
     )
+    include_signature: bool | None = Field(
+        default=None,
+        description=(
+            "Append the account's signature after your text and before the "
+            "attribution line, like Outlook. Default: on when the account has "
+            "one; never added twice. Pass body_html to get the rich signature."
+        ),
+    )
 
 
 class ForwardDraftInput(_AccountScoped):
@@ -293,6 +320,22 @@ class ForwardDraftInput(_AccountScoped):
         default="",
         max_length=50_000,
         description="Optional note prepended as the forward's body. The original is attached as message/rfc822.",
+    )
+    comment_html: str | None = Field(
+        default=None,
+        max_length=500_000,
+        description=(
+            "HTML version of comment. When set, the forward's body is "
+            "multipart/alternative with comment as the text/plain fallback."
+        ),
+    )
+    include_signature: bool | None = Field(
+        default=None,
+        description=(
+            "Append the account's signature to the comment (default: on when "
+            "the account has one; never added twice). Pass comment_html to "
+            "get the rich signature."
+        ),
     )
     cc: list[str] | None = None
     bcc: list[str] | None = None

@@ -29,6 +29,7 @@ Since v0.3 the codebase has gone through repeated adversarial review rounds — 
 - 🚪 **Destructive tools are gated by default.** Folder operations and bulk mutations are *not even registered* unless `MAIL_MCP_WRITE_ENABLED=true`. Send tools are visible always but refuse to transmit until both env vars are set; the LLM gets a typed `SEND_NOT_ENABLED` error with the exact recipe to enable instead of guessing the capability is missing.
 - 🌍 **Localised mailboxes work out of the box.** `save_draft`, `list_drafts`, and `delete_emails` resolve the actual server folder at call time via RFC 6154 SPECIAL-USE: `Borradores`, `Brouillons`, `Entwürfe`, `Bozze`, `Papelera`, `Elementos eliminados`, `[Gmail]/Drafts`, … all handled. No more `[TRYCREATE] folder does not exist` on Outlook ES/FR/DE accounts.
 - 🎨 **HTML email done right.** Pass `body_html` to `save_draft` / `send_email` / `reply_draft` / `update_draft` and the message is built as `multipart/alternative` with `body` as the plain-text fallback — the structure spam filters and text-mode clients expect. Reply quotes land in **both** alternatives (HTML-escaped — From/Date are attacker-controlled). And if you paste HTML into `body` by mistake, the response carries an explicit `html_warning` instead of silently delivering raw markup.
+- ✒️ **Your signature, where Outlook puts it.** Drop `firma.html` / `firma.txt` into `~/.config/mail-mcp/signatures/<alias>/` and every draft, reply, forward and send from that account is signed — after the text, **before the reply quote**, HTML inserted verbatim, never twice. Paths are confined to that directory and size-capped; the LLM only gets an on/off switch (`include_signature`).
 - 🧾 **Forensic attachment mode for chain-of-custody.** `raw_passthrough=true` on an `AttachmentSpec` sends the file's bytes byte-for-byte. SHA-256 is preserved end-to-end through `save_draft` → IMAP → `download_attachment`. Useful for evidence preservation, eIDAS sealing, BEC incident response.
 - 🪶 **Small, auditable, six direct dependencies.** `mcp`, `imapclient`, `keyring`, `pydantic`, `certifi`, `defusedxml`. No web UI, no telemetry, no update checks, no relays, no phone-home.
 - 🧰 **Clean tool surface** — structured IMAP search (no concatenation), bounded outputs, path-traversal-safe attachment saves, RFC 4315 UID-scoped EXPUNGE that refuses to silently delete other clients' messages.
@@ -58,9 +59,9 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/`. Forwarded `message/rfc822` parts download as `.eml`. |
 | `get_email_raw` | ✅ | default | Escape hatch: full RFC822 source of one message (also saved to disk as `.eml`). Use when `get_email` body is empty or `list_attachments` is missing parts visible in the user's mail client. |
 | `list_drafts` | ✅ | default | List the account's Drafts mailbox without guessing its name |
-| `save_draft` | ✍️ | default | Build a MIME draft (disk-path attachments; HTML via `body_html` → `multipart/alternative`) |
+| `save_draft` | ✍️ | default | Build a MIME draft (disk-path attachments; HTML via `body_html` → `multipart/alternative`; account signature appended) |
 | `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject; `body_html` keeps HTML threads formatted |
-| `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822` |
+| `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822`; optional `comment_html` |
 | `update_draft` | ✍️ | default | Edit a draft in place (APPEND-then-DELETE, preserves Message-ID and both body alternatives) |
 | `copy_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Copy without moving (file in two folders) |
 | `move_email` | ⚠️ | `MAIL_MCP_WRITE_ENABLED=true` | Move messages between mailboxes |
@@ -97,6 +98,9 @@ IMAP SEARCH is plain-ASCII per RFC 3501. Use `"nomina"`, not `"nómina"`. Folder
 
 **Send a formatted (HTML) email.**
 Put the HTML in `body_html` and a real plain-text version of the same content in `body` — the message ships as `multipart/alternative` (plain + html), which is what spam filters and text-mode clients expect. HTML pasted into `body` alone is delivered as raw source; the response flags it with `html_warning` instead of failing. Works on `save_draft`, `send_email`, `reply_draft` (quote appended to both parts) and `update_draft` (partial updates preserve both parts). Link images by URL — inline `cid:` embedding is not supported.
+
+**Sign emails like Outlook does.**
+Put the account's signature in `~/.config/mail-mcp/signatures/<alias>/firma.html` and/or `firma.txt` (or point `signature_html_path` / `signature_text_path` in the config at files inside that directory). The write tools append it after the agent's text and before any reply quote: the text one after a `-- ` line in `body`, the HTML one verbatim in `body_html` — so pass `body_html` when the rich signature matters; a plain-text message is never turned into HTML. The signature always ends the agent's own text: before a quote generated by a mail client (Outlook, Gmail, Apple Mail, Thunderbird), at the very end otherwise — `>` quotes and bottom-posted replies are treated as the agent's text, and prose is never mistaken for a quote. A body that already contains the signature is left alone — one that only quotes your earlier signature is still signed — and `include_signature=false` skips it for one call. `get_account_info` tells the agent whether the account has one. With Microsoft 365 the signature lives in the mailbox and cannot be read over IMAP: save it once from the HTML of a message you sent from Outlook.
 
 **Send evidence with hash integrity (forensic).**
 Pass `raw_passthrough: true` in an `AttachmentSpec`. The bytes go on the wire byte-for-byte, base64-encoded but never re-canonicalised. The recipient verifies `SHA-256(received) == SHA-256(source-on-disk)`. Trade-off: the file arrives as `application/octet-stream` regardless of extension, so the recipient saves and renames if they want their mail client to auto-render it as `.eml`.
@@ -139,6 +143,15 @@ mail-mcp add-account personal m@example.com \
 mail-mcp check --alias personal
 mail-mcp serve
 ```
+
+Optional per-account fields in `~/.config/mail-mcp/config.json` (all default to "off", so existing configs keep working):
+
+| Field | What it does |
+|---|---|
+| `smtp_username` | SMTP login identity when it differs from `email` — e.g. the Microsoft 365 UPN (see [`docs/OAUTH_MICROSOFT.md`](docs/OAUTH_MICROSOFT.md)). `add-account --smtp-username`. |
+| `signature_html_path` / `signature_text_path` | Signature files. Default: `signatures/<alias>/firma.html` / `firma.txt` next to the config, if present. `""` disables that part; relative paths are relative to the config directory. Must stay inside `~/.config/mail-mcp/signatures/`, ≤ 64 KiB, UTF-8. |
+
+Re-running `init` or `add-account` on an existing alias keeps these fields.
 
 ### Claude Desktop
 

@@ -85,6 +85,7 @@ def run(argv: list[str] | None = None) -> int:
         status = _keyring_status(acct.alias, acct.email, acct.auth)
         print(f"     auth         : {acct.auth}")
         print(f"     smtp user    : {acct.smtp_username or acct.email}")
+        print(f"     signature    : {_signature_status(cfg, acct)}")
         print(f"     keyring      : {status}")
         if args.connect:
             print(f"     imap+smtp    : {_live_check(acct)}")
@@ -118,6 +119,16 @@ def _keyring_backend() -> str:
         return type(keyring.get_keyring()).__module__ + "." + type(keyring.get_keyring()).__name__
     except Exception as exc:  # noqa: BLE001
         return f"unavailable ({exc.__class__.__name__})"
+
+
+def _signature_status(cfg, acct) -> str:
+    from .signatures import describe_signature
+
+    info = describe_signature(cfg, acct)
+    if "error" in info:
+        return f"error — {info['error']}"
+    parts = [name for name in ("html", "text") if info[name]]
+    return " + ".join(parts) if parts else "none"
 
 
 def _keyring_status(alias: str, email: str, auth: str) -> str:
