@@ -842,10 +842,10 @@ def test_gt_quoted_signature_does_not_count_and_signature_goes_last():
 
 @pytest.mark.parametrize("memo", [
     "De: Dirección General\nPara: Todo el personal\nFecha: 24 de septiembre de 2026\n"
-    "Asunto: Nuevo horario\n\nA partir del 1 de octubre abrimos de 8:00 a 17:00.\n\nGracias,\nMario",
+    "Asunto: Nuevo horario\n\nA partir del 1 de octubre abrimos de 8:00 a 17:00.\n\nGracias,\nAda",
     "MEMORANDUM\nTo: All staff\nFrom: Human Resources\nDate: September 24, 2026\n"
-    "Subject: Office hours\n\nStarting October 1st we open at 8:00.\n\nThanks,\nMario",
-    "Hola Mario,\n\nResumen del buzón de hoy:\n\nDe: Proveedor X <facturas@proveedorx.com>\n"
+    "Subject: Office hours\n\nStarting October 1st we open at 8:00.\n\nThanks,\nAda",
+    "Hola Charles,\n\nResumen del buzón de hoy:\n\nDe: Proveedor X <facturas@proveedorx.com>\n"
     "Enviado: miércoles, 24 de septiembre de 2026 10:15\nAsunto: Factura 123\n"
     "Piden confirmar el pago.\n\nTe propongo pagar la factura.\n\nUn saludo",
 ])
@@ -859,10 +859,10 @@ def test_memos_and_digests_keep_the_signature_at_the_end(memo):
 
 def test_digest_inserted_into_a_signed_draft_is_not_resigned():
     sig = Signature(None, SIG_TEXT)
-    first = apply_signature("Hola Mario,\n\nTe propongo pagar la factura.", None, sig)
+    first = apply_signature("Hola Charles,\n\nTe propongo pagar la factura.", None, sig)
     edited = first.text.replace(
-        "Hola Mario,\n",
-        "Hola Mario,\n\nDe: Proveedor X <f@x.example>\nEnviado: lunes 10:00\nAsunto: Factura\n", 1,
+        "Hola Charles,\n",
+        "Hola Charles,\n\nDe: Proveedor X <f@x.example>\nEnviado: lunes 10:00\nAsunto: Factura\n", 1,
     )
     again = apply_signature(edited, None, sig)
     assert again.status == "already_present" and again.text.count("Ada Lovelace") == 1
@@ -870,9 +870,9 @@ def test_digest_inserted_into_a_signed_draft_is_not_resigned():
 
 @pytest.mark.parametrize("body", [
     "Hi team,\n\nOn 22 September the client wrote:\n\n> We need the delivery moved to Friday.\n\n"
-    "Friday works. I'll confirm tomorrow.\n\nBest,\nMario",
+    "Friday works. I'll confirm tomorrow.\n\nBest,\nAda",
     "Hola Ana, te respondo entre líneas.\n\nEl lun, 22 sept 2026 a las 10:00, Ana <ana@cliente.es> "
-    "escribió:\n> ¿Viernes?\n\nSí, el viernes.\n\n> ¿Presupuesto?\n\nMañana.\n\nUn saludo,\nMario",
+    "escribió:\n> ¿Viernes?\n\nSí, el viernes.\n\n> ¿Presupuesto?\n\nMañana.\n\nUn saludo,\nAda",
     "On 6/3/24 10:15, Ana García wrote:\n> Does Thursday work?\n\nThursday is perfect.\n",
 ])
 def test_markdown_bottom_and_interleaved_quotes_keep_signature_last(body):
@@ -1056,16 +1056,16 @@ def test_link_followed_by_from_label_in_prose_is_not_a_quote():
 
 
 @pytest.mark.parametrize("rebuilt", [
-    "<p>Hola Ana,</p><p>Te confirmo el viernes.</p><p>-- <br>Mario Hernández</p>",
-    "Hola Ana,<br><br>Te confirmo el viernes.<br><br>-- <br>Mario Hernández<br>",
+    "<p>Hola Ana,</p><p>Te confirmo el viernes.</p><p>-- <br>Ada Byron</p>",
+    "Hola Ana,<br><br>Te confirmo el viernes.<br><br>-- <br>Ada Byron<br>",
 ])
 def test_short_signature_html_rebuilt_from_signed_text_is_not_resigned(rebuilt):
-    sig = Signature(None, "Mario Hernández")
+    sig = Signature(None, "Ada Byron")
     first = apply_signature(
         "Hola Ana,\n\nTe confirmo el viernes.", "<p>Hola Ana,</p><p>Te confirmo el viernes.</p>", sig,
     )
     again = apply_signature(first.text, rebuilt, sig)
-    assert again.status == "already_present" and again.html.count("Mario Hernández") == 1
+    assert again.status == "already_present" and again.html.count("Ada Byron") == 1
 
 
 def test_different_flavours_html_rebuilt_from_text_is_not_resigned():
@@ -1075,3 +1075,34 @@ def test_different_flavours_html_rebuilt_from_text_is_not_resigned():
     again = apply_signature(first.text, rebuilt, sig)
     assert again.status == "already_present"
     assert again.html.count("Ada Lovelace") == 1
+
+
+# ---------- round 5 of the review: the text flavour counts only when delimited ----------
+
+def test_attendee_table_with_name_and_company_does_not_suppress_html_signature():
+    sig = Signature(
+        '<table><tr><td><b>Ada Lovelace</b><br>Director · Analytical Engines<br>'
+        '+44 20 0000 0000</td></tr></table>',
+        "Ada Lovelace\nAnalytical Engines",
+    )
+    html = (
+        "<p>Here are the minutes.</p><table><tr><th>Name</th><th>Company</th></tr>"
+        "<tr><td>Charles Babbage</td><td>Difference Ltd</td></tr>"
+        "<tr><td>Ada Lovelace</td><td>Analytical Engines</td></tr></table>"
+    )
+    out = apply_signature("Here are the minutes.", html, sig)
+    assert out.status == "added" and "Director" in out.html
+
+
+def test_full_name_mentioned_in_body_does_not_suppress_html_signature():
+    sig = Signature(SIG_HTML, "Augusta Ada King-Noel")
+    html = "<p>Meeting with Augusta Ada King-Noel on Friday.</p>"
+    out = apply_signature("Meeting with Augusta Ada King-Noel on Friday.", html, sig)
+    assert "sig-root" in out.html
+
+
+def test_quoted_delimited_text_signature_in_html_does_not_count():
+    sig = Signature(SIG_HTML, SIG_ONE_LINE)
+    rebuilt = "<p>Agreed.<br><br>&gt; Earlier.<br>&gt; -- <br>&gt; " + SIG_ONE_LINE + "</p>"
+    out = apply_signature("Agreed.", rebuilt, sig)
+    assert "sig-root" in out.html

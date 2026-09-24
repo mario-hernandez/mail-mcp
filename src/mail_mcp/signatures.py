@@ -471,19 +471,23 @@ def _text_has_signature(own: str, sig_text: str) -> bool:
 def _html_has_signature(own_html: str, sig_html: str, sig_text: str | None = None) -> bool:
     """Is the signature in the caller's own HTML (blockquotes excluded)?
 
-    Matched on the HTML signature's visible text, or on the text flavour —
-    an HTML body rebuilt by the agent from a signed plain-text body carries
-    "-- <br>Name", which must count too.
+    Matched on the HTML signature's visible text, or on the text flavour in
+    its DELIMITED form only ("-- " + signature, outside '>' lines) — an HTML
+    body the agent rebuilt from a signed plain-text body carries
+    "-- <br>Name", which must count. The bare text flavour is never matched:
+    a short firma.txt ("Name\nCompany") turns up by chance in attendee
+    tables and prose and would leave the HTML unsigned.
     """
-    own_fp = _fingerprint(_html_visible_text(_strip_blockquotes(own_html)))
+    visible = _html_visible_text(_strip_blockquotes(own_html))
+    own_fp = _fingerprint(visible)
     sig_fp = _fingerprint(_html_visible_text(_strip_blockquotes(sig_html)))
     if len(sig_fp) >= _MIN_TEXT_FINGERPRINT and sig_fp in own_fp:
         return True
     if sig_text:
-        text_fp = _fingerprint(sig_text)
-        if len(text_fp) >= _MIN_TEXT_FINGERPRINT and text_fp in own_fp:
-            return True
-        if text_fp and _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in own_fp:
+        unquoted_fp = _fingerprint(
+            "\n".join(ln for ln in visible.split("\n") if not _is_quoted_line(ln))
+        )
+        if _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in unquoted_fp:
             return True
     if len(sig_fp) >= _MIN_TEXT_FINGERPRINT:
         return False  # never fall back to raw markup: it would see inside blockquotes
