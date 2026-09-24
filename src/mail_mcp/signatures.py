@@ -73,54 +73,64 @@ _INVISIBLE_RE = re.compile(
     "[" + "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in _INVISIBLE_RANGES) + "]"
 )
 
-# Where a quoted message starts. PRECISION FIRST: ordinary prose ("El cliente
-# escribió:", a row of underscores, a quoted clause) must never be taken for a
-# quote — misplacing the signature in a normal email is far worse than not
-# spotting an exotic quote. Every form below therefore needs strong evidence.
+# Where the caller's own text ends. The signature goes at the end of it —
+# which is "before the quote" for top-posted replies (Outlook) and simply "at
+# the end" for bottom-posted or interleaved ones (Thunderbird, Markdown-style
+# '>' quoting). PRECISION FIRST: misplacing the signature in an ordinary email
+# is far worse than missing an exotic quote, so only structures that mail
+# clients generate — never prose an agent might write — mark a quote.
 #
-# HTML: client-generated quote containers (Outlook web/Mac/desktop, Gmail,
-# Thunderbird, Yahoo), matched on their ids/classes or, for Outlook desktop,
-# on the top-ruled div that opens with a "From:" label.
+# HTML: client quote containers (Outlook web/Mac/desktop, Gmail, Yahoo,
+# Thunderbird inline forward), matched on ids/classes or, for Outlook desktop,
+# on the top-ruled div that opens with a "From:" label ("De&nbsp;:" in French).
 _HTML_QUOTE_MARKER_RE = re.compile(
     r"<[a-z][a-z0-9]*\b[^>]*\b(?:id|class)\s*=\s*[\"']?[^\"'>]*"
-    r"(?:divRplyFwdMsg|appendonsend|stopSpelling|gmail_quote|moz-cite-prefix"
-    r"|yahoo_quoted|OutlookMessageHeader|mail-editor-reference-message-container)"
+    r"(?:divRplyFwdMsg|appendonsend|stopSpelling|gmail_quote|yahoo_quoted"
+    r"|OutlookMessageHeader|mail-editor-reference-message-container|moz-forward-container)"
     r"|<div\b[^>]*\bborder-top\s*:\s*solid\s+#(?:E1E1E1|B5C4DF)\b[^>]*>"
-    r"(?=(?:\s|<(?:p|span|font|b|strong)\b[^>]*>)*(?:from|de|von|da|van|exp[ée]diteur)\s*:)",
+    r"(?=(?:\s|<(?:p|span|font|b|strong)\b[^>]*>)*"
+    r"(?:from|de|von|da|van|exp[ée]diteur)(?:\s|&nbsp;|&#160;|\xa0)*:)",
     re.IGNORECASE,
 )
 # <blockquote type="cite"> (Apple Mail, Thunderbird) marks the quote only when
-# none of the caller's own text follows it — otherwise it is an inline,
-# interleaved quote inside the caller's reply.
+# none of the caller's own text follows it; Thunderbird's attribution div
+# right before it belongs to the quote too.
 _HTML_CITE_RE = re.compile(r"<blockquote\b[^>]*\btype\s*=\s*[\"']?cite", re.IGNORECASE)
+_HTML_CITE_PREFIX_RE = re.compile(
+    r"<div\b[^>]*\bclass\s*=\s*[\"']?[^\"'>]*moz-cite-prefix", re.IGNORECASE,
+)
+# Exactly one <div>…</div> (no nested div, no quote) followed only by whitespace.
+_SINGLE_DIV_RE = re.compile(
+    r"<div\b[^>]*>(?:(?!<div\b|<blockquote\b).)*?</div\s*>\s*", re.IGNORECASE | re.DOTALL,
+)
 # Innermost-first, so nested blockquotes are removed completely by iterating.
 _BLOCKQUOTE_RE = re.compile(
     r"<blockquote\b(?:(?!<blockquote\b).)*?</blockquote\s*>", re.IGNORECASE | re.DOTALL,
 )
 
-# Plain text.
+# Plain text: Outlook-style separators, and Outlook's '____' rule followed by
+# its header block. '>' lines are NOT a quote boundary: agents quote that way
+# in their own messages; they are only ignored when checking for the signature.
 _TEXT_SEPARATOR_RE = re.compile(
     r"^\s*-{2,}\s*(?:original message|mensaje original|message d'origine|messaggio originale"
-    r"|ursprüngliche nachricht|forwarded message|mensaje reenviado|message transféré"
-    r"|messaggio inoltrato|weitergeleitete nachricht)\s*-{2,}\s*$",
+    r"|ursprüngliche nachricht|oorspronkelijk bericht|mensagem original|missatge original"
+    r"|forwarded message|mensaje reenviado|message transféré|messaggio inoltrato"
+    r"|weitergeleitete nachricht|doorgestuurd bericht|mensagem encaminhada)\s*-{2,}\s*$",
     re.IGNORECASE,
 )
-_TEXT_ATTRIBUTION_RE = re.compile(
-    r"^\s*(?:on\b.+\bwrote|el\b.+\bescribió|le\b.+\ba écrit|am\b.+\bschrieb\b.*|il\b.+\bha scritto)"
-    r"\s?:\s*$",
-    re.IGNORECASE,
-)
-_TEXT_WROTE_TAIL_RE = re.compile(r"^\s*(?:wrote|escribió|a écrit|ha scritto|schrieb)\s?:\s*$", re.IGNORECASE)
 _TEXT_RULE_RE = re.compile(r"^\s*_{10,}\s*$")
-_TEXT_FROM_RE = re.compile(r"^\s*\*?(?:from|de|von|da|van|exp[ée]diteur)\s*\*?\s*:\s*\S", re.IGNORECASE)
+_TEXT_FROM_RE = re.compile(
+    r"^\s*\*?(?:from|de|von|da|van|exp[ée]diteur)\s*\*?\s*:\s*\S", re.IGNORECASE,
+)
 _TEXT_SENT_RE = re.compile(
-    r"^\s*\*?(?:sent|date|enviado(?: el)?|fecha|gesendet|datum|envoy[ée](?: le)?|inviato|data)\s*\*?\s*:",
+    r"^\s*\*?(?:sent|date|enviado(?: el)?|enviada|enviat(?: el)?|fecha|gesendet|datum"
+    r"|envoy[ée](?: le)?|inviato|data|verzonden)\s*\*?\s*:",
     re.IGNORECASE,
 )
 _TEXT_SUBJECT_RE = re.compile(
-    r"^\s*\*?(?:subject|asunto|betreff|objet|oggetto|onderwerp)\s*\*?\s*:", re.IGNORECASE,
+    r"^\s*\*?(?:subject|asunto|assunto|assumpte|betreff|objet|oggetto|onderwerp)\s*\*?\s*:",
+    re.IGNORECASE,
 )
-_DIGIT_RE = re.compile(r"\d")
 
 STATUS_ADDED = "added"
 STATUS_PRESENT = "already_present"
@@ -323,68 +333,37 @@ def _is_quoted_line(line: str) -> bool:
 
 
 def _is_header_block(lines: list[str], i: int) -> bool:
-    """An Outlook-style header block: From: followed by Sent/Date: and Subject:."""
+    """Outlook's header block: From: followed by Sent/Date: and Subject:."""
     if i >= len(lines) or not _TEXT_FROM_RE.match(lines[i]):
         return False
     block = lines[i + 1:i + 6]
     return any(_TEXT_SENT_RE.match(x) for x in block) and any(_TEXT_SUBJECT_RE.match(x) for x in block)
 
 
-def _next_nonblank(lines: list[str], i: int) -> int | None:
-    return next((j for j in range(i, len(lines)) if lines[j].strip()), None)
-
-
 def _text_quote_start(lines: list[str], sig_lines: set[str]) -> int | None:
-    """Index of the line where a quoted message starts, or ``None``.
+    """Index of the line where a client-generated quote starts, or ``None``.
 
-    Recognised, each with the evidence that separates it from prose:
-    "-----Original Message-----" separators; "On … wrote:" attributions
-    (possibly wrapped over two lines) that carry a date and either an address
-    or ``>``-quoted lines right after; Outlook header blocks (From: + Sent: +
-    Subject:), optionally under a ``____`` rule. Lines of the signature
-    itself are never taken for a header.
+    Only "-----Original Message-----"-style separators and Outlook's ``____``
+    rule directly followed by its From/Sent/Subject block. Lines of the
+    signature itself are never taken for a separator.
     """
     for i, ln in enumerate(lines):
         if not ln.strip() or _fingerprint(ln) in sig_lines:
             continue
-        if _TEXT_SEPARATOR_RE.match(ln) or _is_header_block(lines, i):
+        if _TEXT_SEPARATOR_RE.match(ln):
             return i
         if _TEXT_RULE_RE.match(ln):
-            j = _next_nonblank(lines, i + 1)
+            j = next((k for k in range(i + 1, len(lines)) if lines[k].strip()), None)
             if j is not None and _is_header_block(lines, j):
-                return i
-            continue
-        candidate, after = ln, i + 1
-        if i + 1 < len(lines) and _TEXT_WROTE_TAIL_RE.match(lines[i + 1]):
-            candidate, after = f"{ln.rstrip()} {lines[i + 1].strip()}", i + 2
-        if _TEXT_ATTRIBUTION_RE.match(candidate) and _DIGIT_RE.search(candidate):
-            j = _next_nonblank(lines, after)
-            quoted_next = j is not None and _is_quoted_line(lines[j])
-            if "@" in candidate or quoted_next:
                 return i
     return None
 
 
 def _split_text_quote(body: str, sig_text: str) -> tuple[str, str]:
-    """Split a plain-text body into (own text, quoted message).
-
-    Besides the headers of :func:`_text_quote_start`, a trailing block of
-    ``>`` lines counts as the quote only when it itself opens with such a
-    header once unquoted — a clause the caller quotes at the end of a new
-    message stays part of the message.
-    """
+    """Split a plain-text body into (the caller's own text, quoted message)."""
     sig_lines = {_fingerprint(ln) for ln in sig_text.split("\n") if ln.strip()}
     lines = body.split("\n")
     start = _text_quote_start(lines, sig_lines)
-    if start is None:
-        j = len(lines)
-        while j > 0 and (not lines[j - 1].strip() or _is_quoted_line(lines[j - 1])):
-            j -= 1
-        tail = lines[j:]
-        if any(_is_quoted_line(ln) for ln in tail) and "\n".join(lines[:j]).strip():
-            unquoted = [re.sub(r"^\s*>\s?", "", ln) for ln in tail]
-            if _text_quote_start(unquoted, sig_lines) is not None:
-                start = j
     if start is None:
         return body, ""
     return "\n".join(lines[:start]), "\n".join(lines[start:])
@@ -396,8 +375,16 @@ def _html_quote_start(body_html: str) -> int | None:
     limit = marker.start() if marker else len(body_html)
     for cite in _HTML_CITE_RE.finditer(body_html, 0, limit):
         after = _strip_blockquotes(body_html[cite.start():limit])
-        if not _html_visible_text(after).strip():
-            return cite.start()  # nothing of the caller's own follows: the quote
+        if _html_visible_text(after).strip():
+            continue  # the caller's own text follows: an inline quote, not the end
+        # Thunderbird's "On … wrote:" div right before the quote belongs to it:
+        # the LAST prefix before this cite, with no other quote in between.
+        prefixes = list(_HTML_CITE_PREFIX_RE.finditer(body_html, 0, cite.start()))
+        if prefixes:
+            between = body_html[prefixes[-1].start():cite.start()]
+            if _SINGLE_DIV_RE.fullmatch(between):
+                return prefixes[-1].start()
+        return cite.start()
     return marker.start() if marker else None
 
 

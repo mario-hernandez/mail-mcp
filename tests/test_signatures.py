@@ -667,16 +667,6 @@ def test_outlook_plain_quote_gets_signature_before_the_separator():
     assert out.text.count("Ada Lovelace") == 2
 
 
-def test_gt_quoted_one_line_signature_does_not_count():
-    body = (
-        "Agreed.\n\n> On Mon, 1 Jul 2026, Charles <c@example.org> wrote:\n"
-        "> Earlier text.\n> " + SIG_ONE_LINE + "\n"
-    )
-    out = apply_signature(body, None, Signature(None, SIG_ONE_LINE))
-    assert out.status == "added"
-    assert out.text.index("-- \n" + SIG_ONE_LINE) < out.text.index("> Earlier text.")
-
-
 def test_outlook_html_reply_gets_signature_before_divrplyfwdmsg():
     body_html = (
         '<html><body><div>Agreed.</div><div id="appendonsend"></div><hr>'
@@ -797,22 +787,6 @@ def test_trailing_cite_is_still_the_quote():
     assert out.html.index("sig-root") < out.html.index('type="cite"')
 
 
-@pytest.mark.parametrize("header", [
-    "De: Ana García <ana@example.org>\nEnviado el: lunes, 1 de julio de 2026 10:00\n"
-    "Para: Ada <ada@example.com>\nAsunto: Presupuesto",
-    "From: Ana <ana@example.org>\nSent: Monday, July 1, 2026 10:00 AM\n"
-    "To: Ada <ada@example.com>\nSubject: Quote",
-    "From: Ana <ana@example.org>\nDate: Monday, 1 July 2026 at 10:00\n"
-    "To: Ada <ada@example.com>\nSubject: Quote",
-    "________________________________\nDe: Ana <ana@example.org>\nEnviado: lunes\nAsunto: x",
-])
-def test_outlook_desktop_text_header_block_is_the_quote(header):
-    body = f"Perfecto, nos vemos.\n\n{header}\n\nTexto anterior.\n\n-- \n{SIG_TEXT}\n"
-    out = apply_signature(body, None, Signature(None, SIG_TEXT))
-    assert out.status == "added"
-    assert out.text.index("-- \nAda") < out.text.index(header.split("\n")[0])
-
-
 def test_from_and_date_without_subject_is_not_a_quote():
     body = "Datos del envío:\nDe: almacén central\nFecha: 15 de julio\n\nGracias.\n"
     out = apply_signature(body, None, Signature(None, SIG_TEXT))
@@ -829,15 +803,6 @@ def test_outlook_desktop_html_quote_div_is_the_quote():
     out = apply_signature("Perfecto.", html, Signature(SIG_HTML, SIG_TEXT))
     assert out.status == "added"
     assert out.html.index("sig-root") < out.html.index("border-top")
-
-
-def test_gmail_wrapped_attribution_in_text():
-    body = (
-        "Vale.\n\nEl lun, 1 jul 2026 a las 10:00, Ana (<ana@example.org>)\nescribió:\n\n"
-        "> ¿Te va bien?\n"
-    )
-    out = apply_signature(body, None, Signature(None, SIG_TEXT))
-    assert out.text.index("-- \n") < out.text.index("El lun, 1 jul")
 
 
 def test_bom_in_signature_files_is_dropped(tmp_path):
@@ -861,3 +826,128 @@ def test_unknown_user_home_in_path_is_a_validation_error(tmp_path):
 def test_cells_without_end_tags_are_separated():
     out = apply_signature("Hi.", None, Signature("<table><tr><td>Ada<td>Director</table>", None))
     assert "Ada Director" in out.text
+
+
+# ---------- round 3 of the review: the signature ends the caller's own text ----------
+
+def test_gt_quoted_signature_does_not_count_and_signature_goes_last():
+    body = (
+        "Agreed.\n\nOn Mon, 1 Jul 2026, Charles <c@example.org> wrote:\n"
+        "> Earlier text.\n> " + SIG_ONE_LINE + "\n"
+    )
+    out = apply_signature(body, None, Signature(None, SIG_ONE_LINE))
+    assert out.status == "added"
+    assert out.text.rstrip().endswith("-- \n" + SIG_ONE_LINE)
+
+
+@pytest.mark.parametrize("memo", [
+    "De: Dirección General\nPara: Todo el personal\nFecha: 24 de septiembre de 2026\n"
+    "Asunto: Nuevo horario\n\nA partir del 1 de octubre abrimos de 8:00 a 17:00.\n\nGracias,\nMario",
+    "MEMORANDUM\nTo: All staff\nFrom: Human Resources\nDate: September 24, 2026\n"
+    "Subject: Office hours\n\nStarting October 1st we open at 8:00.\n\nThanks,\nMario",
+    "Hola Mario,\n\nResumen del buzón de hoy:\n\nDe: Proveedor X <facturas@proveedorx.com>\n"
+    "Enviado: miércoles, 24 de septiembre de 2026 10:15\nAsunto: Factura 123\n"
+    "Piden confirmar el pago.\n\nTe propongo pagar la factura.\n\nUn saludo",
+])
+def test_memos_and_digests_keep_the_signature_at_the_end(memo):
+    html = "<html><body>" + "".join(f"<p>{ln}</p>" for ln in memo.split("\n") if ln) + "</body></html>"
+    out = apply_signature(memo, html, Signature(SIG_HTML, SIG_TEXT))
+    last_line = memo.split("\n")[-1]
+    assert out.text.index(last_line) < out.text.index("-- \n")
+    assert out.html.index(last_line) < out.html.index("sig-root")
+
+
+def test_digest_inserted_into_a_signed_draft_is_not_resigned():
+    sig = Signature(None, SIG_TEXT)
+    first = apply_signature("Hola Mario,\n\nTe propongo pagar la factura.", None, sig)
+    edited = first.text.replace(
+        "Hola Mario,\n",
+        "Hola Mario,\n\nDe: Proveedor X <f@x.example>\nEnviado: lunes 10:00\nAsunto: Factura\n", 1,
+    )
+    again = apply_signature(edited, None, sig)
+    assert again.status == "already_present" and again.text.count("Ada Lovelace") == 1
+
+
+@pytest.mark.parametrize("body", [
+    "Hi team,\n\nOn 22 September the client wrote:\n\n> We need the delivery moved to Friday.\n\n"
+    "Friday works. I'll confirm tomorrow.\n\nBest,\nMario",
+    "Hola Ana, te respondo entre líneas.\n\nEl lun, 22 sept 2026 a las 10:00, Ana <ana@cliente.es> "
+    "escribió:\n> ¿Viernes?\n\nSí, el viernes.\n\n> ¿Presupuesto?\n\nMañana.\n\nUn saludo,\nMario",
+    "On 6/3/24 10:15, Ana García wrote:\n> Does Thursday work?\n\nThursday is perfect.\n",
+])
+def test_markdown_bottom_and_interleaved_quotes_keep_signature_last(body):
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert not out.text.startswith("-- ")
+    assert out.text.rstrip().endswith("Analytical Engines Ltd")
+
+
+@pytest.mark.parametrize("header", [
+    "De: Ana <ana@example.org>\nEnviado el: lunes, 1 de julio de 2026 10:00\nPara: Ada\nAsunto: Presupuesto",
+    "From: Ana <ana@example.org>\nSent: Monday, July 1, 2026 10:00 AM\nTo: Ada\nSubject: Quote",
+    "Van: Ana <ana@example.org>\nVerzonden: maandag 1 juli 2026 10:00\nAan: Ada\nOnderwerp: Offerte",
+    "De: Ana <ana@example.org>\nEnviado: segunda-feira, 1 de julho de 2026 10:00\nPara: Ada\nAssunto: Orçamento",
+    "De: Ana <ana@example.org>\nEnviat el: dilluns, 1 de juliol de 2026 10:00\nPer a: Ada\nAssumpte: Pressupost",
+])
+def test_outlook_text_rule_and_header_block_is_the_quote(header):
+    body = (
+        "Perfecto, nos vemos.\n\n________________________________\n" + header
+        + "\n\nTexto anterior.\n\n-- \n" + SIG_TEXT + "\n"
+    )
+    out = apply_signature(body, None, Signature(None, SIG_TEXT))
+    assert out.status == "added"
+    assert out.text.index("-- \nAda") < out.text.index("________")
+
+
+def test_thunderbird_bottom_post_html_keeps_signature_after_the_reply():
+    html = (
+        '<html><body><div class="moz-cite-prefix">On 6/3/24 10:15, Ana wrote:<br></div>'
+        '<blockquote type="cite">Does Thursday work?</blockquote>'
+        "<p>Thursday is perfect.</p></body></html>"
+    )
+    out = apply_signature("Thursday is perfect.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.html.index("Thursday is perfect.") < out.html.index("sig-root")
+
+
+def test_thunderbird_top_post_html_signature_goes_before_the_attribution():
+    html = (
+        "<html><body><p>Thursday is perfect.</p>"
+        '<div class="moz-cite-prefix">On 6/3/24 10:15, Ana wrote:<br></div>'
+        f'<blockquote type="cite">Does Thursday work?{SIG_HTML}</blockquote></body></html>'
+    )
+    out = apply_signature("Thursday is perfect.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("moz-cite-prefix")
+
+
+def test_thunderbird_interleaved_then_final_quote():
+    html = (
+        '<html><body><div class="moz-cite-prefix">On 1/1, A wrote:<br></div>'
+        '<blockquote type="cite">Q1</blockquote><p>A1</p>'
+        '<div class="moz-cite-prefix">On 2/2, B wrote:<br></div>'
+        '<blockquote type="cite">older</blockquote></body></html>'
+    )
+    out = apply_signature("A1", html, Signature(SIG_HTML, SIG_TEXT))
+    sig_at = out.html.index("sig-root")
+    assert out.html.index("A1") < sig_at < out.html.index("On 2/2, B wrote")
+
+
+def test_thunderbird_inline_forward_container_is_the_quote():
+    html = (
+        "<html><body><p>FYI</p><div class=\"moz-forward-container\"><br>-------- Forwarded Message"
+        f" --------<table><tr><td>Subject:</td><td>x</td></tr></table>{SIG_HTML}</div></body></html>"
+    )
+    out = apply_signature("FYI", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("moz-forward-container")
+
+
+def test_french_outlook_desktop_div_with_nbsp_label():
+    html = (
+        "<html><body><p>Parfait.</p>"
+        '<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm">'
+        '<p class="MsoNormal"><b>De&nbsp;:</b> Anne</p></div>'
+        f"<p>Texte précédent.</p>{SIG_HTML}</body></html>"
+    )
+    out = apply_signature("Parfait.", html, Signature(SIG_HTML, SIG_TEXT))
+    assert out.status == "added"
+    assert out.html.index("sig-root") < out.html.index("border-top")
