@@ -47,6 +47,12 @@ class AccountModel(BaseModel):
     # (that is how delegated/shared mailbox access is addressed). ``None`` keeps
     # the historical behaviour: SMTP logs in as ``email``.
     smtp_username: str | None = None
+    # Optional signature files (see ``signatures.py``). ``None`` uses the
+    # default ``<config dir>/signatures/<alias>/firma.html`` / ``firma.txt``
+    # when present — no file, no signature, as before. ``""`` disables that
+    # part. Every path must resolve inside ``<config dir>/signatures/``.
+    signature_html_path: str | None = None
+    signature_text_path: str | None = None
 
     @field_validator("alias")
     @classmethod
@@ -64,6 +70,16 @@ class AccountModel(BaseModel):
         if v is None:
             return None
         return validate_email_address(v, field="smtp_username")
+
+    @field_validator("signature_html_path", "signature_text_path")
+    @classmethod
+    def _check_signature_path(cls, v: str | None) -> str | None:
+        # Containment and size are enforced when the file is read (the
+        # signatures directory is relative to wherever the config lives);
+        # here we only refuse values no real path contains.
+        if v and any(ord(c) < 32 or ord(c) == 127 for c in v):
+            raise ValidationError("signature path must not contain control characters")
+        return v
 
     @field_validator("imap_host", "smtp_host")
     @classmethod
@@ -99,6 +115,24 @@ class Config:
             if acct.alias == alias:
                 return acct
         raise RuntimeError(f"unknown account alias {alias!r}")
+
+
+# Optional AccountModel fields a user sets by hand (config edit or CLI flag)
+# that re-running ``init`` / ``add-account`` on the same alias must keep —
+# dropping them silently turned a working account into a broken one.
+PRESERVED_ACCOUNT_FIELDS = ("smtp_username", "signature_html_path", "signature_text_path")
+
+
+def preserved_account_fields(cfg: Config, alias: str) -> dict[str, str]:
+    """The hand-set optional fields of an existing ``alias`` (``{}`` if new)."""
+    prev = next((a for a in cfg.model.accounts if a.alias == alias), None)
+    if prev is None:
+        return {}
+    return {
+        name: getattr(prev, name)
+        for name in PRESERVED_ACCOUNT_FIELDS
+        if getattr(prev, name) is not None
+    }
 
 
 def default_config_path() -> Path:

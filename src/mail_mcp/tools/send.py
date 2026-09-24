@@ -27,6 +27,7 @@ from .. import smtp_client
 from ..config import Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
+from ..signatures import sign_body
 from .schemas import SendEmailInput
 
 
@@ -123,17 +124,21 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
     # delivering a message without the file — the failure mode that let an
     # agent believe 17 invoices had been sent when they arrived empty.
     attachments = resolve_many(params.attachments) if params.attachments else []
+    # Signed before sending, like save_draft. A broken signature file raises
+    # here — before anything leaves — rather than sending an unsigned email
+    # the owner believes is signed.
+    signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
     msg, bcc = smtp_client.build_message_with_bcc(
         from_addr=acct.email,
         to=params.to,
         cc=params.cc,
         bcc=params.bcc,
         subject=params.subject,
-        body_text=params.body,
+        body_text=signed.text,
         in_reply_to=params.in_reply_to,
         references=params.references,
         attachments=attachments,
-        body_html=params.body_html,
+        body_html=signed.html,
     )
     message_id = smtp_client.send(acct, creds, msg, bcc=bcc)
     response = {
@@ -150,6 +155,7 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
             {"filename": a.filename, "size": a.size, "content_type": a.content_type}
             for a in attachments
         ],
+        "signature": signed.status,
     }
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = (

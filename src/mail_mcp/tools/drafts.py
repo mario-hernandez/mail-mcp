@@ -14,6 +14,7 @@ from ..config import AccountModel, Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
 from ..safety.validation import ValidationError
+from ..signatures import sign_body
 from .schemas import (
     ForwardDraftInput,
     ReplyDraftInput,
@@ -68,16 +69,17 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
     acct = cfg.account(params.account)
     creds = resolve_auth(acct)
     attachments = resolve_many(params.attachments) if params.attachments else []
+    signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
     msg = smtp_client.build_message(
         from_addr=acct.email,
         to=params.to,
         cc=params.cc,
         subject=params.subject,
-        body_text=params.body,
+        body_text=signed.text,
         in_reply_to=params.in_reply_to,
         references=params.references,
         attachments=attachments,
-        body_html=params.body_html,
+        body_html=signed.html,
     )
     # BCC is deliberately not persisted on a draft: the user's mail client
     # will re-enter BCC at send time. Drafts with BCC headers break some
@@ -108,6 +110,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         )
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
+    response["signature"] = signed.status
     return response
 
 
@@ -118,15 +121,18 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         _raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
+        # Sign the caller's text BEFORE the builder appends the attribution
+        # quote, so the signature sits between the reply and the quote.
+        signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
         msg = smtp_client.build_reply_message(
             from_addr=acct.email,
             original_headers=headers,
-            body_text=params.body,
+            body_text=signed.text,
             extra_to=params.extra_to,
             cc=params.cc,
             reply_all=params.reply_all,
             include_original_quote=params.include_original_quote,
-            body_html=params.body_html,
+            body_html=signed.html,
         )
         drafts_mailbox, draft_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
@@ -138,6 +144,7 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "in_reply_to": msg.get("In-Reply-To"),
         "subject": msg.get("Subject"),
+        "signature": signed.status,
     }
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
@@ -199,8 +206,14 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         # loses content — append-then-delete makes that loss permanent.
         new_body_subtype = "plain"
         new_body_html = params.body_html
+        signature_status = None
         if params.body is not None:
-            new_body = params.body
+            # A replaced body is a freshly written message: sign it like
+            # save_draft would (idempotent, so a body read back from a signed
+            # draft is not signed twice). A preserved body is left untouched.
+            signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
+            new_body, new_body_html = signed.text, signed.html
+            signature_status = signed.status
         else:
             # _safe_get_content, never .get_content(): drafts written by other
             # clients can declare unknown/malformed charsets (LookupError),
@@ -256,6 +269,8 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         "new_uid": int(new_uid),
         "message_id": msg["Message-ID"],
     }
+    if signature_status is not None:
+        response["signature"] = signature_status
     if warning:
         response["warning"] = warning
     return response
@@ -374,14 +389,16 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
+        signed = sign_body(cfg, acct, params.include_signature, params.comment, params.comment_html)
         msg, _bcc = smtp_client.build_forward_message(
             from_addr=acct.email,
             to=params.to,
             original_headers=headers,
             original_raw=raw,
-            comment=params.comment,
+            comment=signed.text,
             cc=params.cc,
             bcc=params.bcc,
+            comment_html=signed.html,
         )
         drafts_mailbox, draft_uid = imap_client.save_draft(
             c, account=acct, message_bytes=bytes(msg),
@@ -393,6 +410,7 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "subject": msg.get("Subject"),
         "attached": "original message attached as message/rfc822",
+        "signature": signed.status,
     }
     if params.bcc:
         # BCC is not persisted on a draft (same as save_draft) — surface that

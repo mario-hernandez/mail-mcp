@@ -15,6 +15,7 @@ from ..config import Config
 from ..credentials import resolve_auth
 from ..safety.guards import sanitize_header, wrap_untrusted
 from ..safety.paths import default_download_root, prepare_download_path
+from ..signatures import describe_signature
 from .schemas import (
     AccountInfoInput,
     DownloadAttachmentInput,
@@ -217,6 +218,9 @@ def get_account_info(cfg: Config, params: AccountInfoInput) -> dict:
         },
         "drafts_mailbox": acct.drafts_mailbox,
         "trash_mailbox": acct.trash_mailbox,
+        # Whether the write tools will append a signature (html / text parts),
+        # or why they cannot. Never the content or the file paths.
+        "signature": describe_signature(cfg, acct),
         "is_default": acct.alias == cfg.model.default_alias,
     }
 
