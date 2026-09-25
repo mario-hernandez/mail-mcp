@@ -385,46 +385,90 @@ def _text_quote_start(lines: list[str], sig_lines: set[str]) -> int | None:
     return None
 
 
-def _split_text_quote(body: str, sig_text: str) -> tuple[str, str]:
-    """Split a plain-text body into (the caller's own text, quoted message)."""
+def _split_text_quote(body: str, sig_text: str, own_address: str | None = None) -> tuple[str, str]:
+    """Split a plain-text body into (the caller's own text, quoted message).
+
+    ``own_address`` (the account's email) lets a rule-less Outlook header
+    block be recognised by metadata: a block whose From: is the owner is the
+    owner's earlier message quoted in the thread, never content of this one.
+    """
     sig_lines = {_fingerprint(ln) for ln in sig_text.split("\n") if ln.strip()}
     lines = body.split("\n")
     start = _text_quote_start(lines, sig_lines)
     if start is None:
-        start = _bare_outlook_quote_start(lines, sig_text)
+        start = _bare_outlook_quote_start(lines, sig_text, own_address)
+    else:
+        start = _bare_block_above(lines, start, sig_text, own_address)
     if start is None:
         return body, ""
     return "\n".join(lines[:start]), "\n".join(lines[start:])
 
 
-def _bare_outlook_quote_start(lines: list[str], sig_text: str) -> int | None:
-    """An Outlook header block WITHOUT its ``____`` rule, in one precise case.
-
-    Outlook desktop and Mac write the quoted thread's From/Sent/Subject
-    block with no rule in the text part, and on its own that block cannot be
-    told from a memo or an inbox digest (so it is not a quote in general).
-    It is taken as the quote only when the owner's signature appears AFTER
-    it, not before it, and the caller wrote something above it — the shape
-    of a reply that carries the thread with the owner's earlier, signed
-    message. Without this, that earlier signature would pass for the new
-    message's own and an explicit include_signature=true would not sign.
-    """
-    sig_fp = _fingerprint(sig_text)
-    if len(sig_fp) < _MIN_TEXT_FINGERPRINT:
-        return None
-    # A body ending in "-- " + signature (the form mail-mcp writes) is this
-    # message signed by mail-mcp; a header block above it is pasted content
-    # (an inbox digest), not a quote.
+def _delimited_tail(lines: list[str], sig_text: str) -> bool:
+    """Do these lines ('>' lines ignored) end with "-- " + signature?"""
     tail = _fingerprint(_strip_trailing_attribution(
         "\n".join(ln for ln in lines if not _is_quoted_line(ln))
     ))
-    if tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}")):
-        return None
+    return tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}"))
+
+
+def _from_is_owner(line: str, own_address: str | None) -> bool:
+    return bool(own_address) and own_address.lower() in line.lower()
+
+
+def _bare_block_above(
+    lines: list[str], start: int, sig_text: str, own_address: str | None,
+) -> int:
+    """A rule-less Outlook header block ABOVE a client separator is the thread's top.
+
+    The separator deeper in the body proves this is a quoted thread (a newer
+    level written by Outlook desktop/Mac on top of an older OWA/mobile level
+    that left a ``____`` rule), so the first header block above it starts
+    the quote — unless the text up to the separator ends with mail-mcp's
+    "-- " signature (then the block is pasted content of this message), and
+    even then when the block's From: is the owner.
+    """
+    tail_signed = _delimited_tail(lines[:start], sig_text)
+    for i in range(1, start):
+        if not _is_header_block(lines, i):
+            continue
+        if not "\n".join(lines[:i]).strip():
+            return start
+        if _from_is_owner(lines[i], own_address) or not tail_signed:
+            return i
+        return start
+    return start
+
+
+def _bare_outlook_quote_start(
+    lines: list[str], sig_text: str, own_address: str | None = None,
+) -> int | None:
+    """A rule-less Outlook header block as the quote start, in precise cases only.
+
+    Outlook desktop and Mac write the quoted thread's From/Sent/Subject block
+    with no rule in the text part, and on its own that block cannot be told
+    from a memo or an inbox digest, so it is not a quote in general. It is
+    taken as the quote only below text of the caller's own, and either (a)
+    some header block from there on has the OWNER as From: — the owner's
+    earlier message in the thread — or (b) the owner's signature appears
+    after it, not before it, and the body does not end with mail-mcp's
+    "-- " signature (which would make the block pasted content of a message
+    mail-mcp signed).
+    """
+    sig_fp = _fingerprint(sig_text)
+    tail_signed = _delimited_tail(lines, sig_text)
     for i in range(1, len(lines)):
         if not _is_header_block(lines, i):
             continue
         before = "\n".join(lines[:i])
-        if not before.strip() or sig_fp in _fingerprint(before):
+        if not before.strip():
+            return None
+        if any(
+            _is_header_block(lines, j) and _from_is_owner(lines[j], own_address)
+            for j in range(i, len(lines))
+        ):
+            return i
+        if len(sig_fp) < _MIN_TEXT_FINGERPRINT or tail_signed or sig_fp in _fingerprint(before):
             return None
         if sig_fp in _fingerprint("\n".join(lines[i:])):
             return i
@@ -628,6 +672,7 @@ def _insert_html(body_html: str, block: str, quote_start: int | None) -> str:
 
 def apply_signature(
     body_text: str, body_html: str | None, sig: Signature | None, *, enabled: bool = True,
+    own_address: str | None = None,
 ) -> SignedBody:
     """Append ``sig`` to the text part and, when present, the HTML part.
 
@@ -650,7 +695,7 @@ def apply_signature(
     new_text = body_text
     if sig_text:
         applicable = True
-        own, quoted = _split_text_quote(body_text, sig_text)
+        own, quoted = _split_text_quote(body_text, sig_text, own_address)
         if not _text_ends_with_signature(own, sig_text):
             head = own.rstrip()
             new_text = (head + "\n\n" if head else "") + f"{TEXT_DELIMITER}\n{sig_text}\n"
@@ -678,7 +723,9 @@ def apply_signature(
     return SignedBody(new_text, new_html, status)
 
 
-def signature_anywhere(sig: Signature, body_text: str, body_html: str | None) -> bool:
+def signature_anywhere(
+    sig: Signature, body_text: str, body_html: str | None, own_address: str | None = None,
+) -> bool:
     """Does the signature appear ANYWHERE in the caller's own text (either part)?
 
     Lenient on purpose and only informative: it backs the "still_present"
@@ -687,7 +734,7 @@ def signature_anywhere(sig: Signature, body_text: str, body_html: str | None) ->
     """
     sig_text = sig.text or normalize_text_signature(_html_visible_text(sig.html or ""))
     if sig_text:
-        own, _quoted = _split_text_quote(body_text, sig_text)
+        own, _quoted = _split_text_quote(body_text, sig_text, own_address)
         if _text_has_signature(own, sig_text):
             return True
     sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
@@ -722,11 +769,11 @@ def sign_body(
             sig = load_signature(cfg, acct)
         except (ValidationError, OSError, RuntimeError):
             sig = None
-        if sig is not None and signature_anywhere(sig, body_text, body_html):
+        if sig is not None and signature_anywhere(sig, body_text, body_html, acct.email):
             return SignedBody(body_text, body_html, STATUS_STILL_PRESENT)
         return SignedBody(body_text, body_html, STATUS_DISABLED)
     sig = load_signature(cfg, acct)
-    signed = apply_signature(body_text, body_html, sig)
+    signed = apply_signature(body_text, body_html, sig, own_address=acct.email)
     if include_signature is None and acct.signature_mode == "ask" and signed.status != STATUS_NONE:
         flavours = " + ".join(
             name for name, part in (("html", sig.html), ("text", sig.text)) if part

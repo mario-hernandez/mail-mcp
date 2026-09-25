@@ -1358,3 +1358,59 @@ def test_signature_elsewhere_than_the_end_does_not_count_as_signed():
     body = "Earlier note:\n-- \n" + SIG_TEXT + "\n\nNew text written after it."
     out = apply_signature(body, None, sig)
     assert out.status == "added" and out.text.rstrip().endswith("Analytical Engines Ltd")
+
+
+# ---------- explicit yes on Outlook threads: metadata tie-breakers ----------
+
+OWN = "me@example.com"
+
+
+def _hdr(frm: str, subject: str) -> str:
+    return f"From: {frm}\nSent: Monday, September 22, 2026 9:12 AM\nTo: X <x@example.org>\nSubject: {subject}\n\n"
+
+
+def test_true_signs_when_oldest_quoted_message_was_signed_by_mail_mcp():
+    sig = Signature(None, SIG_TEXT)
+    first = apply_signature("¿Nos vemos el martes?", None, sig).text  # sent earlier by mail-mcp
+    body = (
+        "Hola Ana,\n\nPerfecto.\n\n" + _hdr("Ana <ana@example.org>", "RE: Reunión")
+        + "¿Te va bien?\n\n" + _hdr(f"Ada <{OWN}>", "Reunión") + first
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.status == "added"
+    assert out.text.index("-- \nAda") < out.text.index("From: Ana")
+
+
+def test_true_signs_a_follow_up_above_the_owners_signed_message_and_a_deeper_rule():
+    sig = Signature(None, SIG_TEXT)
+    body = (
+        "Hola Ana, ¿pudiste verlo?\n\n" + _hdr(f"Ada <{OWN}>", "RE: Presupuesto")
+        + "Te adjunto el presupuesto.\n\n" + SIG_TEXT + "\n\n" + "_" * 32 + "\n"
+        + _hdr("Ana <ana@example.org>", "Presupuesto") + "¿Me lo mandas?\n"
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.status == "added"
+    assert out.text.index("-- \nAda") < out.text.index(f"From: Ada <{OWN}>")
+    again = apply_signature(out.text, None, sig, own_address=OWN)
+    assert again.status == "already_present" and again.text == out.text
+
+
+def test_true_in_a_mixed_thread_signs_above_the_first_block_not_before_the_rule():
+    sig = Signature(None, SIG_TEXT)
+    body = (
+        "Vale, lo reviso.\n\n" + _hdr("Ana <ana@example.org>", "RE: Plano")
+        + "Te mando la versión 2.\n\n" + "_" * 32 + "\n"
+        + _hdr("Ana <ana@example.org>", "Plano") + "Versión 1.\n"
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.text.index("-- \nAda") < out.text.index("From: Ana")
+
+
+def test_pasted_digest_in_a_signed_body_is_still_not_a_quote():
+    sig = Signature(None, SIG_TEXT)
+    body = (
+        "Hola Charles,\n\n" + _hdr("Proveedor X <f@x.example>", "Factura")
+        + "Te propongo pagar la factura.\n\n-- \n" + SIG_TEXT + "\n"
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.status == "already_present" and out.text == body
