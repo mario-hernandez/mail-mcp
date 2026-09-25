@@ -1233,3 +1233,115 @@ def test_signature_choice_required_is_classified_for_the_agent():
 def test_signature_mode_rejects_unknown_values():
     with pytest.raises(pydantic.ValidationError):
         _account(signature_mode="sometimes")
+
+
+# ---------- review of ask mode: no decision may be skipped on weak evidence ----------
+
+OUTLOOK_DESKTOP_TEXT = (
+    "Perfecto, lo vemos el lunes.\n\n"
+    "From: Charles <c@example.org>\nSent: Wednesday, September 24, 2026 18:02\n"
+    "To: Ada <ada@example.com>\nSubject: RE: Offer\n\n"
+    "Earlier text.\n\nHola Charles, te paso la oferta.\n\n" + SIG_TEXT + "\n"
+)
+OUTLOOK_DESKTOP_HTML = (
+    "<html><body><p>Perfecto, lo vemos el lunes.</p>"
+    '<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm">'
+    '<p class="MsoNormal"><b>From:</b> Charles</p></div>'
+    f"<p>Earlier text.</p><p>Hola Charles, te paso la oferta.</p>{SIG_HTML}</body></html>"
+)
+
+
+def test_outlook_desktop_quote_with_owner_signature_still_asks(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput, SendEmailInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        save_draft(_cfg(tmp_path), SaveDraftInput(
+            account="t", to=["c@example.org"], subject="RE: Offer", body=OUTLOOK_DESKTOP_TEXT,
+        ))
+    assert "bytes" not in captured
+    send_mod = _send_setup(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        send_mod.send_email(_cfg(tmp_path), SendEmailInput(
+            account="t", to=["c@example.org"], subject="RE: Offer",
+            body=OUTLOOK_DESKTOP_TEXT, confirm=True,
+        ))
+    assert "msg" not in captured
+
+
+def test_unsigned_outlook_reply_draft_is_not_signed_on_edit(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    _write_default(tmp_path)
+    sig = load_signature(_cfg(tmp_path), _cfg(tmp_path).account())
+    assert sigmod.signature_in(sig, OUTLOOK_DESKTOP_TEXT, OUTLOOK_DESKTOP_HTML) is False
+    raw = bytes(smtp_client.build_message(
+        from_addr="me@example.com", to=["c@example.org"], subject="RE: Offer",
+        body_text=OUTLOOK_DESKTOP_TEXT, body_html=OUTLOOK_DESKTOP_HTML,
+    ))
+    captured: dict = {}
+    _patch_io(monkeypatch, captured, raw=raw)
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=5, body="Nos vemos el lunes a las 10."))
+    assert out["signature"] == "disabled"
+    assert "Ada Lovelace" not in _parse(captured["bytes"]).get_content()
+
+
+def test_signature_in_requires_the_delimited_form_in_text_only_bodies():
+    sig = Signature(None, SIG_TEXT)
+    assert sigmod.signature_in(sig, "Hi.\n\n-- \n" + SIG_TEXT, None) is True
+    assert sigmod.signature_in(sig, "Hi.\n\n" + SIG_TEXT, None) is False
+
+
+def test_update_draft_include_signature_without_body_is_rejected(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured, raw=_signed_draft_bytes(tmp_path))
+    for choice in (True, False):
+        with pytest.raises(ValidationError, match="only applies when you pass body"):
+            update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, include_signature=choice))
+    assert "bytes" not in captured
+
+
+def test_false_with_signature_still_in_body_says_so(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    signed_body = PLAIN + "\n\n-- \n" + SIG_TEXT
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+        account="t", to=["x@example.org"], subject="s", body=signed_body, include_signature=False,
+    ))
+    assert out["signature"] == "still_present" and "signature_note" in out
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+        account="t", to=["x@example.org"], subject="s", body=PLAIN, include_signature=False,
+    ))
+    assert out["signature"] == "disabled" and "signature_note" not in out
+
+
+def test_send_email_false_with_signature_in_body_sends_nothing(tmp_path, monkeypatch):
+    from mail_mcp.tools.schemas import SendEmailInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    send_mod = _send_setup(monkeypatch, captured)
+    with pytest.raises(ValidationError, match="Nothing was sent"):
+        send_mod.send_email(_cfg(tmp_path), SendEmailInput(
+            account="t", to=["x@example.org"], subject="s",
+            body=PLAIN + "\n\n-- \n" + SIG_TEXT, confirm=True, include_signature=False,
+        ))
+    assert "msg" not in captured and not send_mod._send_history.get("t")
+
+
+def test_false_still_skips_a_broken_signature(tmp_path):
+    _write_default(tmp_path, html="x" * (sigmod.MAX_SIGNATURE_BYTES + 1))
+    cfg = _cfg(tmp_path)
+    assert sigmod.sign_body(cfg, cfg.account(), False, PLAIN, None).status == "disabled"

@@ -137,6 +137,8 @@ _TEXT_SUBJECT_RE = re.compile(
 STATUS_ADDED = "added"
 STATUS_PRESENT = "already_present"
 STATUS_DISABLED = "disabled"
+# include_signature=false, but the body the caller passed already carries it.
+STATUS_STILL_PRESENT = "still_present"
 STATUS_NONE = "none"
 
 
@@ -590,18 +592,25 @@ def apply_signature(
 
 
 def signature_in(sig: Signature, body_text: str, body_html: str | None) -> bool:
-    """Does a message already carry ``sig`` in its own text (either part)?"""
+    """Is the message ALREADY signed by its author — strong evidence only?
+
+    Used where "signed" replaces a decision (skip the question in "ask" mode;
+    keep a draft's state on edit), so a false positive would bypass the user.
+    With an HTML part, only the HTML decides: its quote detection recognises
+    Outlook's quote containers, while plain text has no reliable quote marker
+    and an Outlook quote there can carry the owner's EARLIER signature. In a
+    text-only body, only the form mail-mcp writes — "-- " + signature in the
+    caller's own, unquoted text — counts.
+    """
     sig_text = sig.text or normalize_text_signature(_html_visible_text(sig.html or ""))
+    sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
+    if body_html and sig_html:
+        own_html = _own_html_for_dedup(body_html, _html_quote_start(body_html))
+        return _html_has_signature(own_html, sig_html, sig_text)
     if sig_text:
         own, _quoted = _split_text_quote(body_text, sig_text)
-        if _text_has_signature(own, sig_text):
-            return True
-    if body_html:
-        sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
-        if sig_html:
-            own_html = _own_html_for_dedup(body_html, _html_quote_start(body_html))
-            if _html_has_signature(own_html, sig_html, sig_text):
-                return True
+        unquoted = "\n".join(ln for ln in own.split("\n") if not _is_quoted_line(ln))
+        return _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in _fingerprint(unquoted)
     return False
 
 
@@ -619,10 +628,28 @@ def sign_body(
     (no signature, or the body already carries it).
     """
     if include_signature is False:
+        # Say so when the body the caller passed already carries the
+        # signature: "disabled" would claim a signature-free message that is
+        # not. Best effort — a broken signature file must never block a
+        # caller who opted out.
+        try:
+            sig = load_signature(cfg, acct)
+        except (ValidationError, OSError, RuntimeError):
+            sig = None
+        if sig is not None and apply_signature(body_text, body_html, sig).status == STATUS_PRESENT:
+            return SignedBody(body_text, body_html, STATUS_STILL_PRESENT)
         return SignedBody(body_text, body_html, STATUS_DISABLED)
     sig = load_signature(cfg, acct)
     signed = apply_signature(body_text, body_html, sig)
-    if include_signature is None and acct.signature_mode == "ask" and signed.status == STATUS_ADDED:
+    if (
+        include_signature is None
+        and acct.signature_mode == "ask"
+        and signed.status != STATUS_NONE
+        # Skip the question only on strong evidence the author already signed;
+        # a signature that merely appears (e.g. inside an unrecognised quote)
+        # is not a decision.
+        and (signed.status == STATUS_ADDED or not signature_in(sig, body_text, body_html))
+    ):
         flavours = " + ".join(
             name for name, part in (("html", sig.html), ("text", sig.text)) if part
         )

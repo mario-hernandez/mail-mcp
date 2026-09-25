@@ -59,7 +59,7 @@ Three layers: your AI client talks MCP JSON-RPC over stdio, `mail-mcp` enforces 
 | `download_attachment` | ✅ | default | Save an attachment to `~/Downloads/mail-mcp/<alias>/`. Forwarded `message/rfc822` parts download as `.eml`. |
 | `get_email_raw` | ✅ | default | Escape hatch: full RFC822 source of one message (also saved to disk as `.eml`). Use when `get_email` body is empty or `list_attachments` is missing parts visible in the user's mail client. |
 | `list_drafts` | ✅ | default | List the account's Drafts mailbox without guessing its name |
-| `save_draft` | ✍️ | default | Build a MIME draft (disk-path attachments; HTML via `body_html` → `multipart/alternative`; account signature appended) |
+| `save_draft` | ✍️ | default | Build a MIME draft (disk-path attachments; HTML via `body_html` → `multipart/alternative`; account signature on request — see `signature_mode`) |
 | `reply_draft` | ✍️ | default | Draft a reply with proper `In-Reply-To` / `References` / `Re: …` subject; `body_html` keeps HTML threads formatted |
 | `forward_draft` | ✍️ | default | Draft a forward; original attached as `message/rfc822`; optional `comment_html` |
 | `update_draft` | ✍️ | default | Edit a draft in place (APPEND-then-DELETE, preserves Message-ID and both body alternatives) |

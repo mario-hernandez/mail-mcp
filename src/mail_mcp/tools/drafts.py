@@ -23,6 +23,20 @@ from .schemas import (
     UpdateDraftInput,
 )
 
+_SIGNATURE_STILL_PRESENT_NOTE = (
+    "include_signature=false, but the body you passed already contains the "
+    "account signature, so the message still carries it. Remove it from "
+    "body/body_html if it must go without a signature."
+)
+
+
+def _signature_fields(status: str) -> dict:
+    fields = {"signature": status}
+    if status == "still_present":
+        fields["signature_note"] = _SIGNATURE_STILL_PRESENT_NOTE
+    return fields
+
+
 _HTML_IN_BODY_WARNING = (
     "body looks like HTML but the message was built as text/plain — the "
     "recipient will see raw markup. Pass the HTML in body_html (and a "
@@ -110,7 +124,7 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         )
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
-    response["signature"] = signed.status
+    response.update(_signature_fields(signed.status))
     return response
 
 
@@ -146,7 +160,7 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "in_reply_to": msg.get("In-Reply-To"),
         "subject": msg.get("Subject"),
-        "signature": signed.status,
+        **_signature_fields(signed.status),
     }
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
@@ -194,6 +208,13 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
+        if params.include_signature is not None and params.body is None:
+            raise ValidationError(
+                "include_signature only applies when you pass body (a preserved body "
+                "is left exactly as it was). To add the signature, pass the draft's "
+                "body (from get_email) with include_signature=true; to remove it, pass "
+                "the body with the signature deleted and include_signature=false."
+            )
         if params.body_html and params.body is None:
             raise ValidationError(
                 "body_html requires body in the same call: body is the "
@@ -286,7 +307,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         "message_id": msg["Message-ID"],
     }
     if signature_status is not None:
-        response["signature"] = signature_status
+        response.update(_signature_fields(signature_status))
     if warning:
         response["warning"] = warning
     return response
@@ -426,7 +447,7 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "subject": msg.get("Subject"),
         "attached": "original message attached as message/rfc822",
-        "signature": signed.status,
+        **_signature_fields(signed.status),
     }
     if params.bcc:
         # BCC is not persisted on a draft (same as save_draft) — surface that

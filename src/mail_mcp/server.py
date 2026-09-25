@@ -133,13 +133,15 @@ DRAFTS (always enabled — preferred write path):
   - save_draft, reply_draft, forward_draft, update_draft
   - A draft lands in the user's Drafts mailbox; they review and send from
     their own mail client. Prefer drafts over send_email.
-  - Signatures: if the account has one (get_account_info → signature), ASK
-    the user whether to add it before save_draft / reply_draft /
-    forward_draft / send_email, and pass include_signature=true or false.
-    With signature.mode "ask" (the default) omitting it is rejected with
-    SIGNATURE_CHOICE_REQUIRED and nothing is saved or sent. The tool places
-    it after your text and before any quote — do NOT type a sign-off block
-    yourself; pass body_html to get the rich HTML signature.
+  - Signatures: check get_account_info → signature. If the account has one
+    (html or text) and its mode is "ask" (the default), ASK the user whether
+    to add it before save_draft / reply_draft / forward_draft / send_email
+    and pass include_signature=true or false — omitting it is rejected with
+    SIGNATURE_CHOICE_REQUIRED and nothing is saved or sent. Mode "auto"
+    signs unless you pass false (only if the user says so). No signature:
+    nothing to ask. The tool places it after your text and before any quote
+    — do NOT type a sign-off block yourself; pass body_html for the rich
+    HTML signature.
 
 DESTRUCTIVE (registered only when MAIL_MCP_WRITE_ENABLED=true):
   - create_folder, rename_folder, delete_folder
@@ -340,8 +342,9 @@ def build_server(cfg: Config | None = None) -> Server:
                     "their own email client before sending. For rich/formatted "
                     "email pass the HTML in body_html (with a plain-text "
                     "version in body); HTML placed in body ships as raw text. "
-                    "If the account has a signature, ask the user whether to add "
-                    "it and pass include_signature."
+                    "If the account has a signature in mode 'ask' (see "
+                    "get_account_info), ask the user whether to add it and pass "
+                    "include_signature."
                 ),
                 inputSchema=SaveDraftInput.model_json_schema(),
                 annotations={"readOnlyHint": False, "destructiveHint": False},
