@@ -301,14 +301,14 @@ def _reply_headers():
     }
 
 
-def test_save_draft_signs_by_default(tmp_path, monkeypatch):
+def test_save_draft_auto_mode_signs_by_default(tmp_path, monkeypatch):
     from mail_mcp.tools.drafts import save_draft
     from mail_mcp.tools.schemas import SaveDraftInput
 
     _write_default(tmp_path)
     captured: dict = {}
     _patch_io(monkeypatch, captured)
-    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+    out = save_draft(_cfg(tmp_path, signature_mode="auto"), SaveDraftInput(
         account="t", to=["x@example.org"], subject="s", body=PLAIN, body_html=HTML,
     ))
     assert out["signature"] == "added"
@@ -353,6 +353,7 @@ def test_reply_signature_sits_between_reply_and_quote(tmp_path, monkeypatch):
     _patch_io(monkeypatch, captured, headers=_reply_headers())
     out = reply_draft(_cfg(tmp_path), ReplyDraftInput(
         account="t", uid=1, body="Agreed.", body_html="<html><body><p>Agreed.</p></body></html>",
+        include_signature=True,
     ))
     assert out["signature"] == "added"
     msg = _parse(captured["bytes"])
@@ -375,6 +376,7 @@ def test_forward_with_comment_html_gets_rich_signature(tmp_path, monkeypatch):
     _patch_io(monkeypatch, captured, raw=original, headers=_reply_headers())
     out = forward_draft(_cfg(tmp_path), ForwardDraftInput(
         account="t", uid=1, to=["y@example.org"], comment="FYI", comment_html="<p>FYI</p>",
+        include_signature=True,
     ))
     assert out["signature"] == "added"
     msg = _parse(captured["bytes"])
@@ -393,7 +395,9 @@ def test_forward_plain_comment_gets_text_signature(tmp_path, monkeypatch):
     original = b"From: c@example.org\r\nSubject: s\r\n\r\nbody\r\n"
     captured: dict = {}
     _patch_io(monkeypatch, captured, raw=original, headers=_reply_headers())
-    forward_draft(_cfg(tmp_path), ForwardDraftInput(account="t", uid=1, to=["y@example.org"]))
+    forward_draft(_cfg(tmp_path), ForwardDraftInput(
+        account="t", uid=1, to=["y@example.org"], include_signature=True,
+    ))
     msg = _parse(captured["bytes"])
     assert msg.get_body(("plain",)).get_content().startswith("-- \nAda Lovelace")
 
@@ -464,6 +468,7 @@ def test_send_email_is_signed(tmp_path, monkeypatch):
     send_mod = _send_setup(monkeypatch, captured)
     out = send_mod.send_email(_cfg(tmp_path), SendEmailInput(
         account="t", to=["x@example.org"], subject="s", body=PLAIN, body_html=HTML, confirm=True,
+        include_signature=True,
     ))
     assert out["signature"] == "added"
     assert SIG_HTML in captured["msg"].get_body(("html",)).get_content()
@@ -493,7 +498,7 @@ def test_get_account_info_reports_signature_without_content(tmp_path):
 
     _write_default(tmp_path, html=None)
     info = get_account_info(_cfg(tmp_path), AccountInfoInput(account="t"))
-    assert info["signature"] == {"html": False, "text": True}
+    assert info["signature"] == {"html": False, "text": True, "mode": "ask"}
     assert "Ada" not in json.dumps(info)
 
 
@@ -514,7 +519,7 @@ def test_doctor_signature_line(tmp_path):
     cfg = _cfg(tmp_path)
     assert _signature_status(cfg, cfg.account()) == "none"
     _write_default(tmp_path)
-    assert _signature_status(cfg, cfg.account()) == "html + text"
+    assert _signature_status(cfg, cfg.account()) == "html + text (mode: ask)"
 
 
 # ---------- re-running init / add-account keeps the fields ----------
@@ -526,6 +531,7 @@ def test_preserved_fields_include_signature_paths(tmp_path):
         "smtp_username": "me@tenant.onmicrosoft.com",
         "signature_html_path": "",
         "signature_text_path": "/x/firma.txt",
+        "signature_mode": "ask",
     }
     assert preserved_account_fields(cfg, "other") == {}
 
@@ -1106,3 +1112,124 @@ def test_quoted_delimited_text_signature_in_html_does_not_count():
     rebuilt = "<p>Agreed.<br><br>&gt; Earlier.<br>&gt; -- <br>&gt; " + SIG_ONE_LINE + "</p>"
     out = apply_signature("Agreed.", rebuilt, sig)
     assert "sig-root" in out.html
+
+
+# ---------- signature_mode "ask": the agent must ask before signing ----------
+
+def test_ask_mode_is_the_default():
+    assert _account().signature_mode == "ask"
+
+
+def test_ask_mode_rejects_undecided_save_draft_and_saves_nothing(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired, match="include_signature"):
+        save_draft(_cfg(tmp_path), SaveDraftInput(
+            account="t", to=["x@example.org"], subject="s", body=PLAIN,
+        ))
+    assert "bytes" not in captured, "nothing may be saved before the user decides"
+
+
+@pytest.mark.parametrize("choice, expected", [(True, "added"), (False, "disabled")])
+def test_ask_mode_explicit_choice_is_honoured(tmp_path, monkeypatch, choice, expected):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+        account="t", to=["x@example.org"], subject="s", body=PLAIN, include_signature=choice,
+    ))
+    assert out["signature"] == expected
+    assert ("Ada Lovelace" in _parse(captured["bytes"]).get_content()) is choice
+
+
+def test_ask_mode_does_not_ask_when_there_is_nothing_to_decide(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    # no signature configured → no question
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(account="t", to=["x@example.org"], subject="s", body=PLAIN))
+    assert out["signature"] == "none"
+    # body already signed → no question
+    _write_default(tmp_path)
+    signed = PLAIN + "\n\n-- \n" + SIG_TEXT
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(account="t", to=["x@example.org"], subject="s", body=signed))
+    assert out["signature"] == "already_present"
+
+
+def test_ask_mode_reply_and_forward_reject_before_connecting(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import forward_draft, reply_draft
+    from mail_mcp.tools.schemas import ForwardDraftInput, ReplyDraftInput
+
+    _write_default(tmp_path)
+
+    def no_connect(*a, **k):
+        raise AssertionError("must not connect before the signature decision")
+
+    monkeypatch.setattr(imap_client, "connect", no_connect)
+    monkeypatch.setattr("mail_mcp.tools.drafts.resolve_auth", _creds)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        reply_draft(_cfg(tmp_path), ReplyDraftInput(account="t", uid=1, body="ok"))
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        forward_draft(_cfg(tmp_path), ForwardDraftInput(account="t", uid=1, to=["y@example.org"]))
+
+
+def test_ask_mode_send_email_rejects_before_rate_limit_and_send(tmp_path, monkeypatch):
+    from mail_mcp.tools.schemas import SendEmailInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    send_mod = _send_setup(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        send_mod.send_email(_cfg(tmp_path), SendEmailInput(
+            account="t", to=["x@example.org"], subject="s", body=PLAIN, confirm=True,
+        ))
+    assert "msg" not in captured
+    assert not send_mod._send_history.get("t"), "an undecided signature must not burn a send slot"
+
+
+def test_ask_mode_update_draft_keeps_what_the_draft_had(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    # signed draft → edited body stays signed, no question
+    _patch_io(monkeypatch, captured, raw=_signed_draft_bytes(tmp_path))
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, body="Rewritten."))
+    assert out["signature"] == "added"
+    assert _parse(captured["bytes"]).get_content().count("Ada Lovelace") == 1
+    # unsigned draft → edited body stays unsigned, no question
+    unsigned = bytes(smtp_client.build_message(
+        from_addr="me@example.com", to=["x@example.org"], subject="Draft", body_text=PLAIN,
+    ))
+    _patch_io(monkeypatch, captured, raw=unsigned)
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, body="Rewritten."))
+    assert out["signature"] == "disabled"
+    assert "Ada Lovelace" not in _parse(captured["bytes"]).get_content()
+    # explicit choice wins
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(
+        account="t", uid=1, body="Rewritten.", include_signature=True,
+    ))
+    assert out["signature"] == "added"
+
+
+def test_signature_choice_required_is_classified_for_the_agent():
+    from mail_mcp.server import _classify
+
+    out = _classify(sigmod.SignatureChoiceRequired("t", "html + text"))
+    assert out["code"] == "SIGNATURE_CHOICE_REQUIRED"
+    assert "include_signature" in out["hint"] and out["retryable"] is False
+
+
+def test_signature_mode_rejects_unknown_values():
+    with pytest.raises(pydantic.ValidationError):
+        _account(signature_mode="sometimes")

@@ -140,6 +140,24 @@ STATUS_DISABLED = "disabled"
 STATUS_NONE = "none"
 
 
+class SignatureChoiceRequired(RuntimeError):
+    """The account asks before signing and the caller did not decide.
+
+    Raised before anything is saved or sent. The agent is expected to ask the
+    user whether to add the signature and call again with an explicit
+    ``include_signature``.
+    """
+
+    def __init__(self, alias: str, flavours: str) -> None:
+        super().__init__(
+            f"Account '{alias}' has a signature ({flavours}) and its signature_mode "
+            "is 'ask': ask the user whether to add it to this message, then call "
+            "again with include_signature=true or include_signature=false. "
+            "Nothing was saved or sent."
+        )
+        self.alias = alias
+
+
 @dataclass(frozen=True)
 class Signature:
     """A loaded signature. Either part may be missing; never both."""
@@ -305,14 +323,18 @@ def load_signature(cfg: Config, acct: AccountModel) -> Signature | None:
 
 
 def describe_signature(cfg: Config, acct: AccountModel) -> dict:
-    """Summary for ``get_account_info`` / ``doctor``. Never raises."""
+    """Summary for ``get_account_info`` / ``doctor``. Never raises.
+
+    ``mode`` tells the agent whether it must ask the user before signing
+    ("ask") or may sign on its own ("auto").
+    """
     try:
         sig = load_signature(cfg, acct)
     except (ValidationError, OSError, RuntimeError) as exc:
-        return {"html": False, "text": False, "error": str(exc)}
+        return {"html": False, "text": False, "mode": acct.signature_mode, "error": str(exc)}
     if sig is None:
-        return {"html": False, "text": False}
-    return {"html": sig.html is not None, "text": sig.text is not None}
+        return {"html": False, "text": False, "mode": acct.signature_mode}
+    return {"html": sig.html is not None, "text": sig.text is not None, "mode": acct.signature_mode}
 
 
 # --- where the caller's own text ends ---------------------------------------
@@ -567,17 +589,42 @@ def apply_signature(
     return SignedBody(new_text, new_html, status)
 
 
+def signature_in(sig: Signature, body_text: str, body_html: str | None) -> bool:
+    """Does a message already carry ``sig`` in its own text (either part)?"""
+    sig_text = sig.text or normalize_text_signature(_html_visible_text(sig.html or ""))
+    if sig_text:
+        own, _quoted = _split_text_quote(body_text, sig_text)
+        if _text_has_signature(own, sig_text):
+            return True
+    if body_html:
+        sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
+        if sig_html:
+            own_html = _own_html_for_dedup(body_html, _html_quote_start(body_html))
+            if _html_has_signature(own_html, sig_html, sig_text):
+                return True
+    return False
+
+
 def sign_body(
     cfg: Config, acct: AccountModel, include_signature: bool | None,
     body_text: str, body_html: str | None,
 ) -> SignedBody:
     """Tool-layer entry point: resolve, load and apply in one call.
 
-    ``include_signature`` is tri-state: ``None`` (default) and ``True`` both
-    mean "sign if the account has a signature"; ``False`` skips it — and
+    ``include_signature`` is tri-state. ``False`` skips the signature — and
     skips reading the files, so a broken signature never blocks a caller who
-    opted out.
+    opted out. ``True`` signs. ``None`` (omitted) depends on the account's
+    ``signature_mode``: "auto" signs; "ask" raises
+    :class:`SignatureChoiceRequired` — unless there is nothing to decide
+    (no signature, or the body already carries it).
     """
     if include_signature is False:
         return SignedBody(body_text, body_html, STATUS_DISABLED)
-    return apply_signature(body_text, body_html, load_signature(cfg, acct))
+    sig = load_signature(cfg, acct)
+    signed = apply_signature(body_text, body_html, sig)
+    if include_signature is None and acct.signature_mode == "ask" and signed.status == STATUS_ADDED:
+        flavours = " + ".join(
+            name for name, part in (("html", sig.html), ("text", sig.text)) if part
+        )
+        raise SignatureChoiceRequired(acct.alias, flavours)
+    return signed

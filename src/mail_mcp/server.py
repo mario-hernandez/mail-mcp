@@ -133,10 +133,13 @@ DRAFTS (always enabled — preferred write path):
   - save_draft, reply_draft, forward_draft, update_draft
   - A draft lands in the user's Drafts mailbox; they review and send from
     their own mail client. Prefer drafts over send_email.
-  - Signatures: if the account has one (get_account_info → signature), the
-    write tools append it automatically after your text and before any
-    reply quote. Do NOT type a sign-off block yourself; pass body_html to
-    get the rich HTML signature, include_signature=false to omit it.
+  - Signatures: if the account has one (get_account_info → signature), ASK
+    the user whether to add it before save_draft / reply_draft /
+    forward_draft / send_email, and pass include_signature=true or false.
+    With signature.mode "ask" (the default) omitting it is rejected with
+    SIGNATURE_CHOICE_REQUIRED and nothing is saved or sent. The tool places
+    it after your text and before any quote — do NOT type a sign-off block
+    yourself; pass body_html to get the rich HTML signature.
 
 DESTRUCTIVE (registered only when MAIL_MCP_WRITE_ENABLED=true):
   - create_folder, rename_folder, delete_folder
@@ -337,7 +340,8 @@ def build_server(cfg: Config | None = None) -> Server:
                     "their own email client before sending. For rich/formatted "
                     "email pass the HTML in body_html (with a plain-text "
                     "version in body); HTML placed in body ships as raw text. "
-                    "The account's signature is appended automatically."
+                    "If the account has a signature, ask the user whether to add "
+                    "it and pass include_signature."
                 ),
                 inputSchema=SaveDraftInput.model_json_schema(),
                 annotations={"readOnlyHint": False, "destructiveHint": False},
@@ -612,6 +616,14 @@ def _classify(exc: BaseException) -> dict[str, Any]:
         else:
             code = "SEND_NOT_ENABLED"
             hint = SEND_REMEDIATION
+    elif cls == "SignatureChoiceRequired":
+        code = "SIGNATURE_CHOICE_REQUIRED"
+        hint = (
+            "The account has a signature and asks before using it. Ask the "
+            "user whether to add their signature to this message, then call "
+            "the same tool again with include_signature=true or "
+            "include_signature=false. Nothing was saved or sent."
+        )
     elif cls == "OperationDisabled":
         code = "PERMISSION_DENIED"
         hint = (

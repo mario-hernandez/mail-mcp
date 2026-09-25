@@ -115,6 +115,11 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
             code=SendDisabled.REQUIRES_CONFIRM,
         )
     acct = cfg.account(params.account)
+    # Sign before the rate limit: an undecided signature
+    # (SIGNATURE_CHOICE_REQUIRED) or a broken one must not burn a send slot.
+    # A broken signature raises here — before anything leaves — rather than
+    # sending an unsigned email the owner believes is signed.
+    signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)
     # Resolve attachments AFTER the enable/confirm gates and the rate-limit
@@ -124,10 +129,6 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
     # delivering a message without the file — the failure mode that let an
     # agent believe 17 invoices had been sent when they arrived empty.
     attachments = resolve_many(params.attachments) if params.attachments else []
-    # Signed before sending, like save_draft. A broken signature file raises
-    # here — before anything leaves — rather than sending an unsigned email
-    # the owner believes is signed.
-    signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
     msg, bcc = smtp_client.build_message_with_bcc(
         from_addr=acct.email,
         to=params.to,

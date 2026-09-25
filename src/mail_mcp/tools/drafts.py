@@ -14,7 +14,7 @@ from ..config import AccountModel, Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
 from ..safety.validation import ValidationError
-from ..signatures import sign_body
+from ..signatures import load_signature, sign_body, signature_in
 from .schemas import (
     ForwardDraftInput,
     ReplyDraftInput,
@@ -116,14 +116,16 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
 
 def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
     acct = cfg.account(params.account)
+    # Sign the caller's text BEFORE the builder appends the attribution quote,
+    # so the signature sits between the reply and the quote — and before
+    # connecting, so an undecided signature (SIGNATURE_CHOICE_REQUIRED) costs
+    # nothing.
+    signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
         _raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
-        # Sign the caller's text BEFORE the builder appends the attribution
-        # quote, so the signature sits between the reply and the quote.
-        signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
         msg = smtp_client.build_reply_message(
             from_addr=acct.email,
             original_headers=headers,
@@ -211,7 +213,21 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             # A replaced body is a freshly written message: sign it like
             # save_draft would (idempotent, so a body read back from a signed
             # draft is not signed twice). A preserved body is left untouched.
-            signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
+            include = params.include_signature
+            if include is None and acct.signature_mode == "ask":
+                # Editing is not a new decision: keep what the draft had. A
+                # draft that carried the signature keeps it; one that did not
+                # stays unsigned — no question asked on every edit.
+                sig = load_signature(cfg, acct)
+                if sig is not None:
+                    orig_plain = original.get_body(preferencelist=("plain",))
+                    orig_html = original.get_body(preferencelist=("html",))
+                    include = signature_in(
+                        sig,
+                        imap_client._safe_get_content(orig_plain) if orig_plain is not None else "",
+                        imap_client._safe_get_content(orig_html) if orig_html is not None else None,
+                    )
+            signed = sign_body(cfg, acct, include, params.body, params.body_html)
             new_body, new_body_html = signed.text, signed.html
             signature_status = signed.status
         else:
@@ -385,11 +401,11 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
     acct = cfg.account(params.account)
     creds = resolve_auth(acct)
+    signed = sign_body(cfg, acct, params.include_signature, params.comment, params.comment_html)
     with imap_client.connect(acct, creds) as c:
         raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
-        signed = sign_body(cfg, acct, params.include_signature, params.comment, params.comment_html)
         msg, _bcc = smtp_client.build_forward_message(
             from_addr=acct.email,
             to=params.to,

@@ -9,6 +9,27 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.7.0] — 2026-09-25
+
+### Changed
+- **Signatures are now a per-message decision by default.** New per-account
+  `signature_mode`: `"ask"` (default) or `"auto"` (the 0.6.0 behaviour). In
+  `"ask"` mode, calling `save_draft`, `reply_draft`, `forward_draft` or
+  `send_email` on an account that has a signature without passing
+  `include_signature` is rejected with the new error code
+  `SIGNATURE_CHOICE_REQUIRED` — nothing is saved or sent — so the agent asks
+  the user first and calls again with `include_signature=true` or `false`.
+  Nothing is asked when there is nothing to decide (no signature, or the body
+  already carries it). `update_draft` keeps what the draft had: a signed draft
+  stays signed, an unsigned one stays unsigned, unless the caller says
+  otherwise. The decision is checked before connecting to the server and
+  before `send_email`'s hourly rate limit, so an undecided call costs nothing.
+
+### Added
+- `get_account_info` → `signature.mode` and the `doctor` signature line tell
+  the agent whether it must ask. Tool descriptions and the server's handshake
+  instructions tell agents to ask before drafting.
+
 ## [0.6.0] — 2026-09-24
 
 Account signatures, and SMTP that works with Microsoft 365 accounts whose
