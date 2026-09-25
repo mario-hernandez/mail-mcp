@@ -9,6 +9,41 @@ minor bump and are called out explicitly.
 
 _No unreleased changes yet._
 
+## [0.7.0] — 2026-09-25
+
+### Changed
+- **Signatures are now a per-message decision by default.** New per-account
+  `signature_mode`: `"ask"` (default) or `"auto"` (the 0.6.0 behaviour). In
+  `"ask"` mode, calling `save_draft`, `reply_draft`, `forward_draft` or
+  `send_email` on an account that has a signature without passing
+  `include_signature` is rejected with the new error code
+  `SIGNATURE_CHOICE_REQUIRED` — nothing is saved or sent — so the agent asks
+  the user first and calls again with `include_signature=true` or `false`.
+  The decision is never inferred from the body's content — a signature inside
+  quoted text is indistinguishable from the message's own — so it is asked
+  whenever the account has a signature, including when `update_draft`
+  replaces a body (the agent passes the choice the user made for that draft).
+  `true` signs, unless the text already ends with the signature; `false` never
+  adds it, and reports `"still_present"` with a note when the body passed
+  already contains it. `update_draft` rejects `include_signature` without a
+  body (it used to be silently ignored). The decision is checked before
+  connecting to the server and before `send_email`'s hourly rate limit, so an
+  undecided call costs nothing.
+
+### Known limitations
+- The decision is structural (never inferred), but *placement* after an
+  explicit yes relies on recognising quoted material. In a plain-text body
+  that pastes a whole email thread, recognition is best-effort (client
+  separators, Outlook header blocks tied to the owner's address, a deeper
+  separator proving a thread); an exotic paste can place the signature or skip
+  a duplicate imperfectly. HTML bodies use the clients' own quote markers.
+  Review drafts before sending, as always.
+
+### Added
+- `get_account_info` → `signature.mode` and the `doctor` signature line tell
+  the agent whether it must ask. Tool descriptions and the server's handshake
+  instructions tell agents to ask before drafting.
+
 ## [0.6.0] — 2026-09-24
 
 Account signatures, and SMTP that works with Microsoft 365 accounts whose

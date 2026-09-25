@@ -128,7 +128,7 @@ def _signature_status(cfg, acct) -> str:
     if "error" in info:
         return f"error — {info['error']}"
     parts = [name for name in ("html", "text") if info[name]]
-    return " + ".join(parts) if parts else "none"
+    return f"{' + '.join(parts)} (mode: {info['mode']})" if parts else "none"
 
 
 def _keyring_status(alias: str, email: str, auth: str) -> str:

@@ -23,6 +23,21 @@ from .schemas import (
     UpdateDraftInput,
 )
 
+_SIGNATURE_STILL_PRESENT_NOTE = (
+    "include_signature=false: mail-mcp did not add the signature, but the body "
+    "you passed already contains the account's signature text (possibly inside "
+    "quoted material). Remove it from your own text if the message must go "
+    "without it."
+)
+
+
+def _signature_fields(status: str) -> dict:
+    fields = {"signature": status}
+    if status == "still_present":
+        fields["signature_note"] = _SIGNATURE_STILL_PRESENT_NOTE
+    return fields
+
+
 _HTML_IN_BODY_WARNING = (
     "body looks like HTML but the message was built as text/plain — the "
     "recipient will see raw markup. Pass the HTML in body_html (and a "
@@ -110,20 +125,22 @@ def save_draft(cfg: Config, params: SaveDraftInput) -> dict:
         )
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
-    response["signature"] = signed.status
+    response.update(_signature_fields(signed.status))
     return response
 
 
 def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
     acct = cfg.account(params.account)
+    # Sign the caller's text BEFORE the builder appends the attribution quote,
+    # so the signature sits between the reply and the quote — and before
+    # connecting, so an undecided signature (SIGNATURE_CHOICE_REQUIRED) costs
+    # nothing.
+    signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
     creds = resolve_auth(acct)
     with imap_client.connect(acct, creds) as c:
         _raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
-        # Sign the caller's text BEFORE the builder appends the attribution
-        # quote, so the signature sits between the reply and the quote.
-        signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
         msg = smtp_client.build_reply_message(
             from_addr=acct.email,
             original_headers=headers,
@@ -144,7 +161,7 @@ def reply_draft(cfg: Config, params: ReplyDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "in_reply_to": msg.get("In-Reply-To"),
         "subject": msg.get("Subject"),
-        "signature": signed.status,
+        **_signature_fields(signed.status),
     }
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = _HTML_IN_BODY_WARNING
@@ -192,6 +209,13 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             extracted_cc = imap_client._header_addresses(original.get("Cc", ""))
             new_cc = extracted_cc or None
         new_subject = params.subject if params.subject is not None else original.get("Subject", "")
+        if params.include_signature is not None and params.body is None:
+            raise ValidationError(
+                "include_signature only applies when you pass body (a preserved body "
+                "is left exactly as it was). To add the signature, pass the draft's "
+                "body (from get_email) with include_signature=true; to remove it, pass "
+                "the body with the signature deleted and include_signature=false."
+            )
         if params.body_html and params.body is None:
             raise ValidationError(
                 "body_html requires body in the same call: body is the "
@@ -211,6 +235,10 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             # A replaced body is a freshly written message: sign it like
             # save_draft would (idempotent, so a body read back from a signed
             # draft is not signed twice). A preserved body is left untouched.
+            # In "ask" mode an undecided replacement is rejected like any other
+            # write: the decision is the user's, never inferred from the old
+            # draft (its content cannot tell a declined signature from one
+            # inside quoted text). The agent passes the choice the user made.
             signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
             new_body, new_body_html = signed.text, signed.html
             signature_status = signed.status
@@ -270,7 +298,7 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
         "message_id": msg["Message-ID"],
     }
     if signature_status is not None:
-        response["signature"] = signature_status
+        response.update(_signature_fields(signature_status))
     if warning:
         response["warning"] = warning
     return response
@@ -385,11 +413,11 @@ def send_draft(cfg: Config, params: SendDraftInput) -> dict:
 def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
     acct = cfg.account(params.account)
     creds = resolve_auth(acct)
+    signed = sign_body(cfg, acct, params.include_signature, params.comment, params.comment_html)
     with imap_client.connect(acct, creds) as c:
         raw, headers = imap_client.fetch_raw_message(
             c, mailbox=params.mailbox, uid=params.uid,
         )
-        signed = sign_body(cfg, acct, params.include_signature, params.comment, params.comment_html)
         msg, _bcc = smtp_client.build_forward_message(
             from_addr=acct.email,
             to=params.to,
@@ -410,7 +438,7 @@ def forward_draft(cfg: Config, params: ForwardDraftInput) -> dict:
         "message_id": msg["Message-ID"],
         "subject": msg.get("Subject"),
         "attached": "original message attached as message/rfc822",
-        "signature": signed.status,
+        **_signature_fields(signed.status),
     }
     if params.bcc:
         # BCC is not persisted on a draft (same as save_draft) — surface that

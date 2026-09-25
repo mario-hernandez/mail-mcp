@@ -124,12 +124,16 @@ class SaveDraftInput(_AccountScoped):
     include_signature: bool | None = Field(
         default=None,
         description=(
-            "Append the account's signature (configured per account; see "
-            "get_account_info → signature). Default: on when the account has "
-            "one. The HTML signature goes into body_html and the text one, "
-            "after a '-- ' line, into body — pass body_html to get the rich "
-            "signature. Never added twice if the body already contains it. "
-            "Pass false to send without it."
+            "Add the account's signature (see get_account_info → signature)? "
+            "If the account has one and its mode is 'ask' (the default), ask "
+            "the user and pass true or false — omitting it is rejected with "
+            "SIGNATURE_CHOICE_REQUIRED and nothing is saved or sent. Mode "
+            "'auto' defaults to true. No signature: leave it out. The HTML "
+            "signature goes into body_html and the text one, after a '-- ' "
+            "line, into body — pass body_html to get the rich signature. "
+            "Not added twice if your text already ends with it; false never "
+            "adds it (and does not remove one already in the body you pass — "
+            "the response then says 'still_present')."
         ),
     )
     in_reply_to: str | None = None
@@ -253,9 +257,13 @@ class UpdateDraftInput(_AccountScoped):
     include_signature: bool | None = Field(
         default=None,
         description=(
-            "Only used when body is replaced: append the account's signature "
-            "to the new body (default: on when the account has one; never "
-            "added twice). A preserved body is left exactly as it was."
+            "Only valid together with body (rejected otherwise). Add the "
+            "account's signature to the new body? In mode 'ask' (the "
+            "default) pass the same choice the user made for this draft — "
+            "omitting it is rejected with SIGNATURE_CHOICE_REQUIRED; mode "
+            "'auto' defaults to true. Not added twice if the body already "
+            "ends with it; to remove it, pass the body with the signature "
+            "deleted and false. A preserved body is left exactly as it was."
         ),
     )
     preserve_message_id: bool = Field(
@@ -305,9 +313,11 @@ class ReplyDraftInput(_AccountScoped):
     include_signature: bool | None = Field(
         default=None,
         description=(
-            "Append the account's signature after your text and before the "
-            "attribution line, like Outlook. Default: on when the account has "
-            "one; never added twice. Pass body_html to get the rich signature."
+            "Add the account's signature after your text and before the "
+            "attribution line, like Outlook? If the account has one in mode "
+            "'ask' (the default), ask the user and pass true or false "
+            "(SIGNATURE_CHOICE_REQUIRED otherwise); mode 'auto' defaults to "
+            "true. Never added twice. Pass body_html for the rich signature."
         ),
     )
 
@@ -332,9 +342,11 @@ class ForwardDraftInput(_AccountScoped):
     include_signature: bool | None = Field(
         default=None,
         description=(
-            "Append the account's signature to the comment (default: on when "
-            "the account has one; never added twice). Pass comment_html to "
-            "get the rich signature."
+            "Add the account's signature to the comment? If the account has "
+            "one in mode 'ask' (the default), ask the user and pass true or "
+            "false (SIGNATURE_CHOICE_REQUIRED otherwise); mode 'auto' "
+            "defaults to true. Never added twice. Pass comment_html for the "
+            "rich signature."
         ),
     )
     cc: list[str] | None = None

@@ -137,7 +137,27 @@ _TEXT_SUBJECT_RE = re.compile(
 STATUS_ADDED = "added"
 STATUS_PRESENT = "already_present"
 STATUS_DISABLED = "disabled"
+# include_signature=false, but the body the caller passed already carries it.
+STATUS_STILL_PRESENT = "still_present"
 STATUS_NONE = "none"
+
+
+class SignatureChoiceRequired(RuntimeError):
+    """The account asks before signing and the caller did not decide.
+
+    Raised before anything is saved or sent. The agent is expected to ask the
+    user whether to add the signature and call again with an explicit
+    ``include_signature``.
+    """
+
+    def __init__(self, alias: str, flavours: str) -> None:
+        super().__init__(
+            f"Account '{alias}' has a signature ({flavours}) and its signature_mode "
+            "is 'ask': ask the user whether to add it to this message, then call "
+            "again with include_signature=true or include_signature=false. "
+            "Nothing was saved or sent."
+        )
+        self.alias = alias
 
 
 @dataclass(frozen=True)
@@ -305,14 +325,18 @@ def load_signature(cfg: Config, acct: AccountModel) -> Signature | None:
 
 
 def describe_signature(cfg: Config, acct: AccountModel) -> dict:
-    """Summary for ``get_account_info`` / ``doctor``. Never raises."""
+    """Summary for ``get_account_info`` / ``doctor``. Never raises.
+
+    ``mode`` tells the agent whether it must ask the user before signing
+    ("ask") or may sign on its own ("auto").
+    """
     try:
         sig = load_signature(cfg, acct)
     except (ValidationError, OSError, RuntimeError) as exc:
-        return {"html": False, "text": False, "error": str(exc)}
+        return {"html": False, "text": False, "mode": acct.signature_mode, "error": str(exc)}
     if sig is None:
-        return {"html": False, "text": False}
-    return {"html": sig.html is not None, "text": sig.text is not None}
+        return {"html": False, "text": False, "mode": acct.signature_mode}
+    return {"html": sig.html is not None, "text": sig.text is not None, "mode": acct.signature_mode}
 
 
 # --- where the caller's own text ends ---------------------------------------
@@ -361,14 +385,95 @@ def _text_quote_start(lines: list[str], sig_lines: set[str]) -> int | None:
     return None
 
 
-def _split_text_quote(body: str, sig_text: str) -> tuple[str, str]:
-    """Split a plain-text body into (the caller's own text, quoted message)."""
+def _split_text_quote(body: str, sig_text: str, own_address: str | None = None) -> tuple[str, str]:
+    """Split a plain-text body into (the caller's own text, quoted message).
+
+    ``own_address`` (the account's email) lets a rule-less Outlook header
+    block be recognised by metadata: a block whose From: is the owner is the
+    owner's earlier message quoted in the thread, never content of this one.
+    """
     sig_lines = {_fingerprint(ln) for ln in sig_text.split("\n") if ln.strip()}
     lines = body.split("\n")
     start = _text_quote_start(lines, sig_lines)
     if start is None:
+        start = _bare_outlook_quote_start(lines, sig_text, own_address)
+    else:
+        start = _bare_block_above(lines, start, sig_text, own_address)
+    if start is None:
         return body, ""
     return "\n".join(lines[:start]), "\n".join(lines[start:])
+
+
+def _delimited_tail(lines: list[str], sig_text: str) -> bool:
+    """Do these lines ('>' lines ignored) end with "-- " + signature?"""
+    tail = _fingerprint(_strip_trailing_attribution(
+        "\n".join(ln for ln in lines if not _is_quoted_line(ln))
+    ))
+    return tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}"))
+
+
+def _from_is_owner(line: str, own_address: str | None) -> bool:
+    return bool(own_address) and own_address.lower() in line.lower()
+
+
+def _bare_block_above(
+    lines: list[str], start: int, sig_text: str, own_address: str | None,
+) -> int:
+    """A rule-less Outlook header block ABOVE a client separator is the thread's top.
+
+    The separator deeper in the body proves this is a quoted thread (a newer
+    level written by Outlook desktop/Mac on top of an older OWA/mobile level
+    that left a ``____`` rule), so the first header block above it starts
+    the quote — unless the text up to the separator ends with mail-mcp's
+    "-- " signature (then the block is pasted content of this message), and
+    even then when the block's From: is the owner.
+    """
+    tail_signed = _delimited_tail(lines[:start], sig_text)
+    for i in range(1, start):
+        if not _is_header_block(lines, i):
+            continue
+        if not "\n".join(lines[:i]).strip():
+            return start
+        if _from_is_owner(lines[i], own_address) or not tail_signed:
+            return i
+        return start
+    return start
+
+
+def _bare_outlook_quote_start(
+    lines: list[str], sig_text: str, own_address: str | None = None,
+) -> int | None:
+    """A rule-less Outlook header block as the quote start, in precise cases only.
+
+    Outlook desktop and Mac write the quoted thread's From/Sent/Subject block
+    with no rule in the text part, and on its own that block cannot be told
+    from a memo or an inbox digest, so it is not a quote in general. It is
+    taken as the quote only below text of the caller's own, and either (a)
+    some header block from there on has the OWNER as From: — the owner's
+    earlier message in the thread — or (b) the owner's signature appears
+    after it, not before it, and the body does not end with mail-mcp's
+    "-- " signature (which would make the block pasted content of a message
+    mail-mcp signed).
+    """
+    sig_fp = _fingerprint(sig_text)
+    tail_signed = _delimited_tail(lines, sig_text)
+    for i in range(1, len(lines)):
+        if not _is_header_block(lines, i):
+            continue
+        before = "\n".join(lines[:i])
+        if not before.strip():
+            return None
+        if any(
+            _is_header_block(lines, j) and _from_is_owner(lines[j], own_address)
+            for j in range(i, len(lines))
+        ):
+            return i
+        if len(sig_fp) < _MIN_TEXT_FINGERPRINT or tail_signed or sig_fp in _fingerprint(before):
+            return None
+        if sig_fp in _fingerprint("\n".join(lines[i:])):
+            return i
+        return None
+    return None
 
 
 def _mask_quoted(html: str) -> str:
@@ -495,6 +600,56 @@ def _html_has_signature(own_html: str, sig_html: str, sig_text: str | None = Non
     return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", own_html)
 
 
+# The attribution line mail-mcp's reply_draft appends after the signature.
+_OWN_ATTRIBUTION_LINE_RE = re.compile(r"^\s*On .+ wrote:\s*$")
+
+
+def _strip_trailing_attribution(text: str) -> str:
+    lines = text.rstrip().split("\n")
+    if len(lines) > 1 and _OWN_ATTRIBUTION_LINE_RE.match(lines[-1]):
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _text_ends_with_signature(own: str, sig_text: str) -> bool:
+    """Does the caller's own text END with the signature ('>' lines ignored)?
+
+    The end, not anywhere: a signature earlier in the text (the owner's
+    previous message quoted without a recognised marker) is not this
+    message's signature. A trailing "On … wrote:" line (what reply_draft
+    appends) is skipped. Short signatures must carry the "-- " delimiter.
+    """
+    unquoted = "\n".join(ln for ln in own.split("\n") if not _is_quoted_line(ln))
+    tail = _fingerprint(_strip_trailing_attribution(unquoted))
+    sig_fp = _fingerprint(sig_text)
+    if not sig_fp:
+        return True
+    if len(sig_fp) < _MIN_TEXT_FINGERPRINT:
+        return tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}"))
+    return tail.endswith(sig_fp)
+
+
+def _html_ends_with_signature(own_html: str, sig_html: str, sig_text: str | None) -> bool:
+    """HTML counterpart of :func:`_text_ends_with_signature`.
+
+    Matched on the HTML signature's visible text, or on the text flavour in
+    its delimited form only ("-- <br>Name", from an HTML body the agent
+    rebuilt from a signed plain-text body) — a bare "Name / Company" at the
+    end of a table would otherwise count.
+    """
+    visible = _html_visible_text(_strip_blockquotes(own_html))
+    tail = _fingerprint(_strip_trailing_attribution(visible))
+    sig_fp = _fingerprint(_html_visible_text(_strip_blockquotes(sig_html)))
+    if len(sig_fp) >= _MIN_TEXT_FINGERPRINT and tail.endswith(sig_fp):
+        return True
+    if sig_text and tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}")):
+        return True
+    if len(sig_fp) >= _MIN_TEXT_FINGERPRINT:
+        return False
+    # Image-only or near-empty signature: compare the markup itself.
+    return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", own_html)
+
+
 def _text_to_html_block(text: str) -> str:
     lines = "<br>\n".join(_html_lib.escape(line) for line in text.split("\n"))
     return f'<div class="mail-mcp-signature">{lines}</div>'
@@ -517,6 +672,7 @@ def _insert_html(body_html: str, block: str, quote_start: int | None) -> str:
 
 def apply_signature(
     body_text: str, body_html: str | None, sig: Signature | None, *, enabled: bool = True,
+    own_address: str | None = None,
 ) -> SignedBody:
     """Append ``sig`` to the text part and, when present, the HTML part.
 
@@ -539,8 +695,8 @@ def apply_signature(
     new_text = body_text
     if sig_text:
         applicable = True
-        own, quoted = _split_text_quote(body_text, sig_text)
-        if not _text_has_signature(own, sig_text):
+        own, quoted = _split_text_quote(body_text, sig_text, own_address)
+        if not _text_ends_with_signature(own, sig_text):
             head = own.rstrip()
             new_text = (head + "\n\n" if head else "") + f"{TEXT_DELIMITER}\n{sig_text}\n"
             if quoted.strip():
@@ -554,7 +710,7 @@ def apply_signature(
             applicable = True
             quote_start = _html_quote_start(body_html)
             own_html = _own_html_for_dedup(body_html, quote_start)
-            if not _html_has_signature(own_html, sig_html, sig_text):
+            if not _html_ends_with_signature(own_html, sig_html, sig_text):
                 new_html = _insert_html(body_html, sig_html, quote_start)
                 added = True
 
@@ -567,17 +723,60 @@ def apply_signature(
     return SignedBody(new_text, new_html, status)
 
 
+def signature_anywhere(
+    sig: Signature, body_text: str, body_html: str | None, own_address: str | None = None,
+) -> bool:
+    """Does the signature appear ANYWHERE in the caller's own text (either part)?
+
+    Lenient on purpose and only informative: it backs the "still_present"
+    note when the caller declined the signature. It never replaces a
+    decision.
+    """
+    sig_text = sig.text or normalize_text_signature(_html_visible_text(sig.html or ""))
+    if sig_text:
+        own, _quoted = _split_text_quote(body_text, sig_text, own_address)
+        if _text_has_signature(own, sig_text):
+            return True
+    sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
+    if body_html and sig_html:
+        own_html = _own_html_for_dedup(body_html, _html_quote_start(body_html))
+        return _html_has_signature(own_html, sig_html, sig_text)
+    return False
+
+
 def sign_body(
     cfg: Config, acct: AccountModel, include_signature: bool | None,
     body_text: str, body_html: str | None,
 ) -> SignedBody:
     """Tool-layer entry point: resolve, load and apply in one call.
 
-    ``include_signature`` is tri-state: ``None`` (default) and ``True`` both
-    mean "sign if the account has a signature"; ``False`` skips it — and
-    skips reading the files, so a broken signature never blocks a caller who
-    opted out.
+    ``include_signature`` is the caller's (the user's) decision:
+
+    * ``True`` — sign (not twice: a body that already ENDS with the
+      signature is left alone).
+    * ``False`` — never add it. If the body already contains the signature
+      text, the status is "still_present" so the caller can tell the user.
+      Skips reading the files when it cannot, so a broken signature never
+      blocks a caller who opted out.
+    * ``None`` — decided by the account's ``signature_mode``: "auto" signs;
+      "ask" raises :class:`SignatureChoiceRequired` whenever the account has
+      a signature that could apply. The decision is NEVER inferred from the
+      body's content: an earlier signature inside quoted text is
+      indistinguishable from this message's own.
     """
     if include_signature is False:
+        try:
+            sig = load_signature(cfg, acct)
+        except (ValidationError, OSError, RuntimeError):
+            sig = None
+        if sig is not None and signature_anywhere(sig, body_text, body_html, acct.email):
+            return SignedBody(body_text, body_html, STATUS_STILL_PRESENT)
         return SignedBody(body_text, body_html, STATUS_DISABLED)
-    return apply_signature(body_text, body_html, load_signature(cfg, acct))
+    sig = load_signature(cfg, acct)
+    signed = apply_signature(body_text, body_html, sig, own_address=acct.email)
+    if include_signature is None and acct.signature_mode == "ask" and signed.status != STATUS_NONE:
+        flavours = " + ".join(
+            name for name, part in (("html", sig.html), ("text", sig.text)) if part
+        )
+        raise SignatureChoiceRequired(acct.alias, flavours)
+    return signed

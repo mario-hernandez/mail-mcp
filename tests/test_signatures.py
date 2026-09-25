@@ -301,14 +301,14 @@ def _reply_headers():
     }
 
 
-def test_save_draft_signs_by_default(tmp_path, monkeypatch):
+def test_save_draft_auto_mode_signs_by_default(tmp_path, monkeypatch):
     from mail_mcp.tools.drafts import save_draft
     from mail_mcp.tools.schemas import SaveDraftInput
 
     _write_default(tmp_path)
     captured: dict = {}
     _patch_io(monkeypatch, captured)
-    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+    out = save_draft(_cfg(tmp_path, signature_mode="auto"), SaveDraftInput(
         account="t", to=["x@example.org"], subject="s", body=PLAIN, body_html=HTML,
     ))
     assert out["signature"] == "added"
@@ -353,6 +353,7 @@ def test_reply_signature_sits_between_reply_and_quote(tmp_path, monkeypatch):
     _patch_io(monkeypatch, captured, headers=_reply_headers())
     out = reply_draft(_cfg(tmp_path), ReplyDraftInput(
         account="t", uid=1, body="Agreed.", body_html="<html><body><p>Agreed.</p></body></html>",
+        include_signature=True,
     ))
     assert out["signature"] == "added"
     msg = _parse(captured["bytes"])
@@ -375,6 +376,7 @@ def test_forward_with_comment_html_gets_rich_signature(tmp_path, monkeypatch):
     _patch_io(monkeypatch, captured, raw=original, headers=_reply_headers())
     out = forward_draft(_cfg(tmp_path), ForwardDraftInput(
         account="t", uid=1, to=["y@example.org"], comment="FYI", comment_html="<p>FYI</p>",
+        include_signature=True,
     ))
     assert out["signature"] == "added"
     msg = _parse(captured["bytes"])
@@ -393,7 +395,9 @@ def test_forward_plain_comment_gets_text_signature(tmp_path, monkeypatch):
     original = b"From: c@example.org\r\nSubject: s\r\n\r\nbody\r\n"
     captured: dict = {}
     _patch_io(monkeypatch, captured, raw=original, headers=_reply_headers())
-    forward_draft(_cfg(tmp_path), ForwardDraftInput(account="t", uid=1, to=["y@example.org"]))
+    forward_draft(_cfg(tmp_path), ForwardDraftInput(
+        account="t", uid=1, to=["y@example.org"], include_signature=True,
+    ))
     msg = _parse(captured["bytes"])
     assert msg.get_body(("plain",)).get_content().startswith("-- \nAda Lovelace")
 
@@ -422,24 +426,6 @@ def test_update_draft_preserved_body_is_untouched(tmp_path, monkeypatch):
     assert msg.get_body(("html",)).get_content().count("sig-root") == 1
 
 
-def test_update_draft_replaced_body_is_signed_once(tmp_path, monkeypatch):
-    from mail_mcp.tools.drafts import update_draft
-    from mail_mcp.tools.schemas import UpdateDraftInput
-
-    _write_default(tmp_path)
-    captured: dict = {}
-    _patch_io(monkeypatch, captured, raw=_signed_draft_bytes(tmp_path))
-    out = update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, body="Rewritten."))
-    assert out["signature"] == "added"
-    assert _parse(captured["bytes"]).get_content().count("Ada Lovelace") == 1
-
-    # Reading the signed body back and resubmitting it must not stack a copy.
-    signed_again = "Rewritten.\n\n-- \n" + SIG_TEXT + "\n"
-    out = update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, body=signed_again))
-    assert out["signature"] == "already_present"
-    assert _parse(captured["bytes"]).get_content().count("Ada Lovelace") == 1
-
-
 def _send_setup(monkeypatch, captured):
     from mail_mcp.tools import send as send_mod
 
@@ -464,6 +450,7 @@ def test_send_email_is_signed(tmp_path, monkeypatch):
     send_mod = _send_setup(monkeypatch, captured)
     out = send_mod.send_email(_cfg(tmp_path), SendEmailInput(
         account="t", to=["x@example.org"], subject="s", body=PLAIN, body_html=HTML, confirm=True,
+        include_signature=True,
     ))
     assert out["signature"] == "added"
     assert SIG_HTML in captured["msg"].get_body(("html",)).get_content()
@@ -493,7 +480,7 @@ def test_get_account_info_reports_signature_without_content(tmp_path):
 
     _write_default(tmp_path, html=None)
     info = get_account_info(_cfg(tmp_path), AccountInfoInput(account="t"))
-    assert info["signature"] == {"html": False, "text": True}
+    assert info["signature"] == {"html": False, "text": True, "mode": "ask"}
     assert "Ada" not in json.dumps(info)
 
 
@@ -514,7 +501,7 @@ def test_doctor_signature_line(tmp_path):
     cfg = _cfg(tmp_path)
     assert _signature_status(cfg, cfg.account()) == "none"
     _write_default(tmp_path)
-    assert _signature_status(cfg, cfg.account()) == "html + text"
+    assert _signature_status(cfg, cfg.account()) == "html + text (mode: ask)"
 
 
 # ---------- re-running init / add-account keeps the fields ----------
@@ -526,6 +513,7 @@ def test_preserved_fields_include_signature_paths(tmp_path):
         "smtp_username": "me@tenant.onmicrosoft.com",
         "signature_html_path": "",
         "signature_text_path": "/x/firma.txt",
+        "signature_mode": "ask",
     }
     assert preserved_account_fields(cfg, "other") == {}
 
@@ -1106,3 +1094,323 @@ def test_quoted_delimited_text_signature_in_html_does_not_count():
     rebuilt = "<p>Agreed.<br><br>&gt; Earlier.<br>&gt; -- <br>&gt; " + SIG_ONE_LINE + "</p>"
     out = apply_signature("Agreed.", rebuilt, sig)
     assert "sig-root" in out.html
+
+
+# ---------- signature_mode "ask": the agent must ask before signing ----------
+
+def test_ask_mode_is_the_default():
+    assert _account().signature_mode == "ask"
+
+
+def test_ask_mode_rejects_undecided_save_draft_and_saves_nothing(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired, match="include_signature"):
+        save_draft(_cfg(tmp_path), SaveDraftInput(
+            account="t", to=["x@example.org"], subject="s", body=PLAIN,
+        ))
+    assert "bytes" not in captured, "nothing may be saved before the user decides"
+
+
+def test_ask_mode_reply_and_forward_reject_before_connecting(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import forward_draft, reply_draft
+    from mail_mcp.tools.schemas import ForwardDraftInput, ReplyDraftInput
+
+    _write_default(tmp_path)
+
+    def no_connect(*a, **k):
+        raise AssertionError("must not connect before the signature decision")
+
+    monkeypatch.setattr(imap_client, "connect", no_connect)
+    monkeypatch.setattr("mail_mcp.tools.drafts.resolve_auth", _creds)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        reply_draft(_cfg(tmp_path), ReplyDraftInput(account="t", uid=1, body="ok"))
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        forward_draft(_cfg(tmp_path), ForwardDraftInput(account="t", uid=1, to=["y@example.org"]))
+
+
+def test_ask_mode_send_email_rejects_before_rate_limit_and_send(tmp_path, monkeypatch):
+    from mail_mcp.tools.schemas import SendEmailInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    send_mod = _send_setup(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        send_mod.send_email(_cfg(tmp_path), SendEmailInput(
+            account="t", to=["x@example.org"], subject="s", body=PLAIN, confirm=True,
+        ))
+    assert "msg" not in captured
+    assert not send_mod._send_history.get("t"), "an undecided signature must not burn a send slot"
+
+
+def test_signature_choice_required_is_classified_for_the_agent():
+    from mail_mcp.server import _classify
+
+    out = _classify(sigmod.SignatureChoiceRequired("t", "html + text"))
+    assert out["code"] == "SIGNATURE_CHOICE_REQUIRED"
+    assert "include_signature" in out["hint"] and out["retryable"] is False
+
+
+def test_signature_mode_rejects_unknown_values():
+    with pytest.raises(pydantic.ValidationError):
+        _account(signature_mode="sometimes")
+
+
+# ---------- review of ask mode: no decision may be skipped on weak evidence ----------
+
+OUTLOOK_DESKTOP_TEXT = (
+    "Perfecto, lo vemos el lunes.\n\n"
+    "From: Charles <c@example.org>\nSent: Wednesday, September 24, 2026 18:02\n"
+    "To: Ada <ada@example.com>\nSubject: RE: Offer\n\n"
+    "Earlier text.\n\nHola Charles, te paso la oferta.\n\n" + SIG_TEXT + "\n"
+)
+OUTLOOK_DESKTOP_HTML = (
+    "<html><body><p>Perfecto, lo vemos el lunes.</p>"
+    '<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm">'
+    '<p class="MsoNormal"><b>From:</b> Charles</p></div>'
+    f"<p>Earlier text.</p><p>Hola Charles, te paso la oferta.</p>{SIG_HTML}</body></html>"
+)
+
+
+def test_outlook_desktop_quote_with_owner_signature_still_asks(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput, SendEmailInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        save_draft(_cfg(tmp_path), SaveDraftInput(
+            account="t", to=["c@example.org"], subject="RE: Offer", body=OUTLOOK_DESKTOP_TEXT,
+        ))
+    assert "bytes" not in captured
+    send_mod = _send_setup(monkeypatch, captured)
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        send_mod.send_email(_cfg(tmp_path), SendEmailInput(
+            account="t", to=["c@example.org"], subject="RE: Offer",
+            body=OUTLOOK_DESKTOP_TEXT, confirm=True,
+        ))
+    assert "msg" not in captured
+
+
+def test_update_draft_include_signature_without_body_is_rejected(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured, raw=_signed_draft_bytes(tmp_path))
+    for choice in (True, False):
+        with pytest.raises(ValidationError, match="only applies when you pass body"):
+            update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, include_signature=choice))
+    assert "bytes" not in captured
+
+
+def test_false_with_signature_still_in_body_says_so(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    signed_body = PLAIN + "\n\n-- \n" + SIG_TEXT
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+        account="t", to=["x@example.org"], subject="s", body=signed_body, include_signature=False,
+    ))
+    assert out["signature"] == "still_present" and "signature_note" in out
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+        account="t", to=["x@example.org"], subject="s", body=PLAIN, include_signature=False,
+    ))
+    assert out["signature"] == "disabled" and "signature_note" not in out
+
+
+def test_false_still_skips_a_broken_signature(tmp_path):
+    _write_default(tmp_path, html="x" * (sigmod.MAX_SIGNATURE_BYTES + 1))
+    cfg = _cfg(tmp_path)
+    assert sigmod.sign_body(cfg, cfg.account(), False, PLAIN, None).status == "disabled"
+
+
+# ---------- ask mode is decision-only: never inferred from content ----------
+
+def test_update_draft_replaced_body_is_signed_once(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured, raw=_signed_draft_bytes(tmp_path))
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(
+        account="t", uid=1, body="Rewritten.", include_signature=True,
+    ))
+    assert out["signature"] == "added"
+    assert _parse(captured["bytes"]).get_content().count("Ada Lovelace") == 1
+    signed_again = "Rewritten.\n\n-- \n" + SIG_TEXT + "\n"
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(
+        account="t", uid=1, body=signed_again, include_signature=True,
+    ))
+    assert out["signature"] == "already_present"
+    assert _parse(captured["bytes"]).get_content().count("Ada Lovelace") == 1
+
+
+def test_ask_mode_asks_whenever_the_account_has_a_signature(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(account="t", to=["x@example.org"], subject="s", body=PLAIN))
+    assert out["signature"] == "none"  # no signature: nothing to ask
+    captured.clear()
+    _write_default(tmp_path)
+    for body in (PLAIN, PLAIN + "\n\n-- \n" + SIG_TEXT):  # even if the body looks signed
+        with pytest.raises(sigmod.SignatureChoiceRequired):
+            save_draft(_cfg(tmp_path), SaveDraftInput(account="t", to=["x@example.org"], subject="s", body=body))
+    assert "bytes" not in captured
+
+
+def test_ask_mode_update_draft_needs_the_users_choice(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import update_draft
+    from mail_mcp.tools.schemas import UpdateDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured, raw=_signed_draft_bytes(tmp_path))
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, body="Rewritten."))
+    assert "bytes" not in captured
+    out = update_draft(_cfg(tmp_path), UpdateDraftInput(
+        account="t", uid=1, body="Rewritten.", include_signature=False,
+    ))
+    assert out["signature"] == "disabled"
+    assert "Ada Lovelace" not in _parse(captured["bytes"]).get_content()
+
+
+def test_declined_draft_is_never_signed_on_a_later_edit(tmp_path, monkeypatch):
+    from mail_mcp.tools.drafts import save_draft, update_draft
+    from mail_mcp.tools.schemas import SaveDraftInput, UpdateDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    out = save_draft(_cfg(tmp_path), SaveDraftInput(
+        account="t", to=["c@example.org"], subject="RE: Offer",
+        body=OUTLOOK_DESKTOP_TEXT, include_signature=False,
+    ))
+    # The earlier signature sits inside the recognised thread, not in the own text.
+    assert out["signature"] == "disabled"
+    _patch_io(monkeypatch, captured, raw=captured["bytes"])
+    with pytest.raises(sigmod.SignatureChoiceRequired):
+        update_draft(_cfg(tmp_path), UpdateDraftInput(account="t", uid=1, body="Nos vemos el lunes a las 10."))
+
+
+def test_explicit_true_signs_a_reply_carrying_an_outlook_thread(tmp_path, monkeypatch):
+    """The owner's earlier signature inside a rule-less Outlook quote must not
+    pass for the new message's: an explicit yes signs, before the thread."""
+    from mail_mcp.tools.drafts import save_draft
+    from mail_mcp.tools.schemas import SaveDraftInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    _patch_io(monkeypatch, captured)
+    for body_html in (None, OUTLOOK_DESKTOP_HTML):
+        out = save_draft(_cfg(tmp_path), SaveDraftInput(
+            account="t", to=["c@example.org"], subject="RE: Offer",
+            body=OUTLOOK_DESKTOP_TEXT, body_html=body_html, include_signature=True,
+        ))
+        assert out["signature"] == "added"
+        msg = _parse(captured["bytes"])
+        plain = msg.get_body(("plain",)).get_content()
+        assert plain.index("-- \nAda") < plain.index("From: Charles")
+        if body_html:
+            html = msg.get_body(("html",)).get_content()
+            assert html.index("sig-root") < html.index("border-top")
+
+
+def test_bare_header_block_is_still_not_a_quote_without_the_signature_after_it():
+    memo = (
+        "Hola,\n\nDe: Dirección\nEnviado: lunes 10:00\nAsunto: Horario\n\n"
+        "Abrimos a las 8.\n\nGracias."
+    )
+    out = apply_signature(memo, None, Signature(None, SIG_TEXT))
+    assert out.text.index("Gracias.") < out.text.index("-- \n")
+
+
+def test_explicit_false_on_a_body_carrying_the_signature_sends_with_a_note(tmp_path, monkeypatch):
+    from mail_mcp.tools.schemas import SendEmailInput
+
+    _write_default(tmp_path)
+    captured: dict = {}
+    send_mod = _send_setup(monkeypatch, captured)
+    out = send_mod.send_email(_cfg(tmp_path), SendEmailInput(
+        account="t", to=["x@example.org"], subject="s",
+        body=PLAIN + "\n\n-- \n" + SIG_TEXT, confirm=True, include_signature=False,
+    ))
+    assert out["signature"] == "still_present" and "signature_note" in out
+    assert captured["msg"].get_content().count("Ada Lovelace") == 1  # nothing added
+
+
+def test_signature_elsewhere_than_the_end_does_not_count_as_signed():
+    sig = Signature(None, SIG_TEXT)
+    body = "Earlier note:\n-- \n" + SIG_TEXT + "\n\nNew text written after it."
+    out = apply_signature(body, None, sig)
+    assert out.status == "added" and out.text.rstrip().endswith("Analytical Engines Ltd")
+
+
+# ---------- explicit yes on Outlook threads: metadata tie-breakers ----------
+
+OWN = "me@example.com"
+
+
+def _hdr(frm: str, subject: str) -> str:
+    return f"From: {frm}\nSent: Monday, September 22, 2026 9:12 AM\nTo: X <x@example.org>\nSubject: {subject}\n\n"
+
+
+def test_true_signs_when_oldest_quoted_message_was_signed_by_mail_mcp():
+    sig = Signature(None, SIG_TEXT)
+    first = apply_signature("¿Nos vemos el martes?", None, sig).text  # sent earlier by mail-mcp
+    body = (
+        "Hola Ana,\n\nPerfecto.\n\n" + _hdr("Ana <ana@example.org>", "RE: Reunión")
+        + "¿Te va bien?\n\n" + _hdr(f"Ada <{OWN}>", "Reunión") + first
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.status == "added"
+    assert out.text.index("-- \nAda") < out.text.index("From: Ana")
+
+
+def test_true_signs_a_follow_up_above_the_owners_signed_message_and_a_deeper_rule():
+    sig = Signature(None, SIG_TEXT)
+    body = (
+        "Hola Ana, ¿pudiste verlo?\n\n" + _hdr(f"Ada <{OWN}>", "RE: Presupuesto")
+        + "Te adjunto el presupuesto.\n\n" + SIG_TEXT + "\n\n" + "_" * 32 + "\n"
+        + _hdr("Ana <ana@example.org>", "Presupuesto") + "¿Me lo mandas?\n"
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.status == "added"
+    assert out.text.index("-- \nAda") < out.text.index(f"From: Ada <{OWN}>")
+    again = apply_signature(out.text, None, sig, own_address=OWN)
+    assert again.status == "already_present" and again.text == out.text
+
+
+def test_true_in_a_mixed_thread_signs_above_the_first_block_not_before_the_rule():
+    sig = Signature(None, SIG_TEXT)
+    body = (
+        "Vale, lo reviso.\n\n" + _hdr("Ana <ana@example.org>", "RE: Plano")
+        + "Te mando la versión 2.\n\n" + "_" * 32 + "\n"
+        + _hdr("Ana <ana@example.org>", "Plano") + "Versión 1.\n"
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.text.index("-- \nAda") < out.text.index("From: Ana")
+
+
+def test_pasted_digest_in_a_signed_body_is_still_not_a_quote():
+    sig = Signature(None, SIG_TEXT)
+    body = (
+        "Hola Charles,\n\n" + _hdr("Proveedor X <f@x.example>", "Factura")
+        + "Te propongo pagar la factura.\n\n-- \n" + SIG_TEXT + "\n"
+    )
+    out = apply_signature(body, None, sig, own_address=OWN)
+    assert out.status == "already_present" and out.text == body

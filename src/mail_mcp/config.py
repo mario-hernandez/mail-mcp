@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from .safety.validation import ValidationError, validate_alias, validate_email_address
 
 AuthKind = Literal["password", "oauth-microsoft"]
+SignatureMode = Literal["ask", "auto"]
 
 
 class AccountModel(BaseModel):
@@ -53,6 +54,12 @@ class AccountModel(BaseModel):
     # part. Every path must resolve inside ``<config dir>/signatures/``.
     signature_html_path: str | None = None
     signature_text_path: str | None = None
+    # Whether the write tools may add the signature on their own. "ask" (the
+    # default): the caller must decide per message — omitting
+    # include_signature on an account that has a signature is rejected with
+    # SIGNATURE_CHOICE_REQUIRED so the agent asks the user first. "auto":
+    # sign whenever the account has a signature, unless told not to.
+    signature_mode: SignatureMode = "ask"
 
     @field_validator("alias")
     @classmethod
@@ -120,7 +127,9 @@ class Config:
 # Optional AccountModel fields a user sets by hand (config edit or CLI flag)
 # that re-running ``init`` / ``add-account`` on the same alias must keep —
 # dropping them silently turned a working account into a broken one.
-PRESERVED_ACCOUNT_FIELDS = ("smtp_username", "signature_html_path", "signature_text_path")
+PRESERVED_ACCOUNT_FIELDS = (
+    "smtp_username", "signature_html_path", "signature_text_path", "signature_mode",
+)
 
 
 def preserved_account_fields(cfg: Config, alias: str) -> dict[str, str]:
