@@ -391,8 +391,45 @@ def _split_text_quote(body: str, sig_text: str) -> tuple[str, str]:
     lines = body.split("\n")
     start = _text_quote_start(lines, sig_lines)
     if start is None:
+        start = _bare_outlook_quote_start(lines, sig_text)
+    if start is None:
         return body, ""
     return "\n".join(lines[:start]), "\n".join(lines[start:])
+
+
+def _bare_outlook_quote_start(lines: list[str], sig_text: str) -> int | None:
+    """An Outlook header block WITHOUT its ``____`` rule, in one precise case.
+
+    Outlook desktop and Mac write the quoted thread's From/Sent/Subject
+    block with no rule in the text part, and on its own that block cannot be
+    told from a memo or an inbox digest (so it is not a quote in general).
+    It is taken as the quote only when the owner's signature appears AFTER
+    it, not before it, and the caller wrote something above it — the shape
+    of a reply that carries the thread with the owner's earlier, signed
+    message. Without this, that earlier signature would pass for the new
+    message's own and an explicit include_signature=true would not sign.
+    """
+    sig_fp = _fingerprint(sig_text)
+    if len(sig_fp) < _MIN_TEXT_FINGERPRINT:
+        return None
+    # A body ending in "-- " + signature (the form mail-mcp writes) is this
+    # message signed by mail-mcp; a header block above it is pasted content
+    # (an inbox digest), not a quote.
+    tail = _fingerprint(_strip_trailing_attribution(
+        "\n".join(ln for ln in lines if not _is_quoted_line(ln))
+    ))
+    if tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}")):
+        return None
+    for i in range(1, len(lines)):
+        if not _is_header_block(lines, i):
+            continue
+        before = "\n".join(lines[:i])
+        if not before.strip() or sig_fp in _fingerprint(before):
+            return None
+        if sig_fp in _fingerprint("\n".join(lines[i:])):
+            return i
+        return None
+    return None
 
 
 def _mask_quoted(html: str) -> str:
@@ -519,6 +556,56 @@ def _html_has_signature(own_html: str, sig_html: str, sig_text: str | None = Non
     return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", own_html)
 
 
+# The attribution line mail-mcp's reply_draft appends after the signature.
+_OWN_ATTRIBUTION_LINE_RE = re.compile(r"^\s*On .+ wrote:\s*$")
+
+
+def _strip_trailing_attribution(text: str) -> str:
+    lines = text.rstrip().split("\n")
+    if len(lines) > 1 and _OWN_ATTRIBUTION_LINE_RE.match(lines[-1]):
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _text_ends_with_signature(own: str, sig_text: str) -> bool:
+    """Does the caller's own text END with the signature ('>' lines ignored)?
+
+    The end, not anywhere: a signature earlier in the text (the owner's
+    previous message quoted without a recognised marker) is not this
+    message's signature. A trailing "On … wrote:" line (what reply_draft
+    appends) is skipped. Short signatures must carry the "-- " delimiter.
+    """
+    unquoted = "\n".join(ln for ln in own.split("\n") if not _is_quoted_line(ln))
+    tail = _fingerprint(_strip_trailing_attribution(unquoted))
+    sig_fp = _fingerprint(sig_text)
+    if not sig_fp:
+        return True
+    if len(sig_fp) < _MIN_TEXT_FINGERPRINT:
+        return tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}"))
+    return tail.endswith(sig_fp)
+
+
+def _html_ends_with_signature(own_html: str, sig_html: str, sig_text: str | None) -> bool:
+    """HTML counterpart of :func:`_text_ends_with_signature`.
+
+    Matched on the HTML signature's visible text, or on the text flavour in
+    its delimited form only ("-- <br>Name", from an HTML body the agent
+    rebuilt from a signed plain-text body) — a bare "Name / Company" at the
+    end of a table would otherwise count.
+    """
+    visible = _html_visible_text(_strip_blockquotes(own_html))
+    tail = _fingerprint(_strip_trailing_attribution(visible))
+    sig_fp = _fingerprint(_html_visible_text(_strip_blockquotes(sig_html)))
+    if len(sig_fp) >= _MIN_TEXT_FINGERPRINT and tail.endswith(sig_fp):
+        return True
+    if sig_text and tail.endswith(_fingerprint(f"{TEXT_DELIMITER}\n{sig_text}")):
+        return True
+    if len(sig_fp) >= _MIN_TEXT_FINGERPRINT:
+        return False
+    # Image-only or near-empty signature: compare the markup itself.
+    return _WS_RE.sub(" ", sig_html).strip() in _WS_RE.sub(" ", own_html)
+
+
 def _text_to_html_block(text: str) -> str:
     lines = "<br>\n".join(_html_lib.escape(line) for line in text.split("\n"))
     return f'<div class="mail-mcp-signature">{lines}</div>'
@@ -564,7 +651,7 @@ def apply_signature(
     if sig_text:
         applicable = True
         own, quoted = _split_text_quote(body_text, sig_text)
-        if not _text_has_signature(own, sig_text):
+        if not _text_ends_with_signature(own, sig_text):
             head = own.rstrip()
             new_text = (head + "\n\n" if head else "") + f"{TEXT_DELIMITER}\n{sig_text}\n"
             if quoted.strip():
@@ -578,7 +665,7 @@ def apply_signature(
             applicable = True
             quote_start = _html_quote_start(body_html)
             own_html = _own_html_for_dedup(body_html, quote_start)
-            if not _html_has_signature(own_html, sig_html, sig_text):
+            if not _html_ends_with_signature(own_html, sig_html, sig_text):
                 new_html = _insert_html(body_html, sig_html, quote_start)
                 added = True
 
@@ -591,26 +678,22 @@ def apply_signature(
     return SignedBody(new_text, new_html, status)
 
 
-def signature_in(sig: Signature, body_text: str, body_html: str | None) -> bool:
-    """Is the message ALREADY signed by its author — strong evidence only?
+def signature_anywhere(sig: Signature, body_text: str, body_html: str | None) -> bool:
+    """Does the signature appear ANYWHERE in the caller's own text (either part)?
 
-    Used where "signed" replaces a decision (skip the question in "ask" mode;
-    keep a draft's state on edit), so a false positive would bypass the user.
-    With an HTML part, only the HTML decides: its quote detection recognises
-    Outlook's quote containers, while plain text has no reliable quote marker
-    and an Outlook quote there can carry the owner's EARLIER signature. In a
-    text-only body, only the form mail-mcp writes — "-- " + signature in the
-    caller's own, unquoted text — counts.
+    Lenient on purpose and only informative: it backs the "still_present"
+    note when the caller declined the signature. It never replaces a
+    decision.
     """
     sig_text = sig.text or normalize_text_signature(_html_visible_text(sig.html or ""))
+    if sig_text:
+        own, _quoted = _split_text_quote(body_text, sig_text)
+        if _text_has_signature(own, sig_text):
+            return True
     sig_html = sig.html or (_text_to_html_block(sig.text) if sig.text else None)
     if body_html and sig_html:
         own_html = _own_html_for_dedup(body_html, _html_quote_start(body_html))
         return _html_has_signature(own_html, sig_html, sig_text)
-    if sig_text:
-        own, _quoted = _split_text_quote(body_text, sig_text)
-        unquoted = "\n".join(ln for ln in own.split("\n") if not _is_quoted_line(ln))
-        return _fingerprint(f"{TEXT_DELIMITER}\n{sig_text}") in _fingerprint(unquoted)
     return False
 
 
@@ -620,36 +703,31 @@ def sign_body(
 ) -> SignedBody:
     """Tool-layer entry point: resolve, load and apply in one call.
 
-    ``include_signature`` is tri-state. ``False`` skips the signature — and
-    skips reading the files, so a broken signature never blocks a caller who
-    opted out. ``True`` signs. ``None`` (omitted) depends on the account's
-    ``signature_mode``: "auto" signs; "ask" raises
-    :class:`SignatureChoiceRequired` — unless there is nothing to decide
-    (no signature, or the body already carries it).
+    ``include_signature`` is the caller's (the user's) decision:
+
+    * ``True`` — sign (not twice: a body that already ENDS with the
+      signature is left alone).
+    * ``False`` — never add it. If the body already contains the signature
+      text, the status is "still_present" so the caller can tell the user.
+      Skips reading the files when it cannot, so a broken signature never
+      blocks a caller who opted out.
+    * ``None`` — decided by the account's ``signature_mode``: "auto" signs;
+      "ask" raises :class:`SignatureChoiceRequired` whenever the account has
+      a signature that could apply. The decision is NEVER inferred from the
+      body's content: an earlier signature inside quoted text is
+      indistinguishable from this message's own.
     """
     if include_signature is False:
-        # Say so when the body the caller passed already carries the
-        # signature: "disabled" would claim a signature-free message that is
-        # not. Best effort — a broken signature file must never block a
-        # caller who opted out.
         try:
             sig = load_signature(cfg, acct)
         except (ValidationError, OSError, RuntimeError):
             sig = None
-        if sig is not None and apply_signature(body_text, body_html, sig).status == STATUS_PRESENT:
+        if sig is not None and signature_anywhere(sig, body_text, body_html):
             return SignedBody(body_text, body_html, STATUS_STILL_PRESENT)
         return SignedBody(body_text, body_html, STATUS_DISABLED)
     sig = load_signature(cfg, acct)
     signed = apply_signature(body_text, body_html, sig)
-    if (
-        include_signature is None
-        and acct.signature_mode == "ask"
-        and signed.status != STATUS_NONE
-        # Skip the question only on strong evidence the author already signed;
-        # a signature that merely appears (e.g. inside an unrecognised quote)
-        # is not a decision.
-        and (signed.status == STATUS_ADDED or not signature_in(sig, body_text, body_html))
-    ):
+    if include_signature is None and acct.signature_mode == "ask" and signed.status != STATUS_NONE:
         flavours = " + ".join(
             name for name, part in (("html", sig.html), ("text", sig.text)) if part
         )

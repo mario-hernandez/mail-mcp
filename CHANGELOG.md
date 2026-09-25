@@ -19,11 +19,16 @@ _No unreleased changes yet._
   `include_signature` is rejected with the new error code
   `SIGNATURE_CHOICE_REQUIRED` — nothing is saved or sent — so the agent asks
   the user first and calls again with `include_signature=true` or `false`.
-  Nothing is asked when there is nothing to decide (no signature, or the body
-  already carries it). `update_draft` keeps what the draft had: a signed draft
-  stays signed, an unsigned one stays unsigned, unless the caller says
-  otherwise. The decision is checked before connecting to the server and
-  before `send_email`'s hourly rate limit, so an undecided call costs nothing.
+  The decision is never inferred from the body's content — a signature inside
+  quoted text is indistinguishable from the message's own — so it is asked
+  whenever the account has a signature, including when `update_draft`
+  replaces a body (the agent passes the choice the user made for that draft).
+  `true` signs, unless the text already ends with the signature; `false` never
+  adds it, and reports `"still_present"` with a note when the body passed
+  already contains it. `update_draft` rejects `include_signature` without a
+  body (it used to be silently ignored). The decision is checked before
+  connecting to the server and before `send_email`'s hourly rate limit, so an
+  undecided call costs nothing.
 
 ### Added
 - `get_account_info` → `signature.mode` and the `doctor` signature line tell

@@ -27,7 +27,6 @@ from .. import smtp_client
 from ..config import Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
-from ..safety.validation import ValidationError
 from ..signatures import STATUS_STILL_PRESENT, sign_body
 from .schemas import SendEmailInput
 
@@ -121,14 +120,6 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
     # A broken signature raises here — before anything leaves — rather than
     # sending an unsigned email the owner believes is signed.
     signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
-    if signed.status == STATUS_STILL_PRESENT:
-        # The user said "no signature" but the body carries it: sending would
-        # contradict the decision, and sending cannot be undone.
-        raise ValidationError(
-            "include_signature=false, but the body already contains the account "
-            "signature. Remove it from body/body_html to send without it, or pass "
-            "include_signature=true if it should stay. Nothing was sent."
-        )
     _check_rate_limit(acct.alias)
     creds = resolve_auth(acct)
     # Resolve attachments AFTER the enable/confirm gates and the rate-limit
@@ -167,6 +158,12 @@ def send_email(cfg: Config, params: SendEmailInput) -> dict:
         ],
         "signature": signed.status,
     }
+    if signed.status == STATUS_STILL_PRESENT:
+        response["signature_note"] = (
+            "include_signature=false: mail-mcp did not add the signature, but the "
+            "body you passed already contained the account's signature text "
+            "(possibly inside quoted material)."
+        )
     if not params.body_html and smtp_client.looks_like_html(params.body):
         response["html_warning"] = (
             "body looks like HTML but the message was sent as text/plain — "

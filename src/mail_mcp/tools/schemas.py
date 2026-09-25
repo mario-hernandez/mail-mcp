@@ -131,8 +131,9 @@ class SaveDraftInput(_AccountScoped):
             "'auto' defaults to true. No signature: leave it out. The HTML "
             "signature goes into body_html and the text one, after a '-- ' "
             "line, into body — pass body_html to get the rich signature. "
-            "Never added twice; false does not remove a signature already in "
-            "the body you pass (the response says 'still_present')."
+            "Not added twice if your text already ends with it; false never "
+            "adds it (and does not remove one already in the body you pass — "
+            "the response then says 'still_present')."
         ),
     )
     in_reply_to: str | None = None
@@ -256,12 +257,13 @@ class UpdateDraftInput(_AccountScoped):
     include_signature: bool | None = Field(
         default=None,
         description=(
-            "Only valid together with body (rejected otherwise): add the "
-            "account's signature to the new body (true/false). If omitted, "
-            "the draft keeps what it had — signed drafts stay signed, "
-            "unsigned ones stay unsigned (mode 'auto': signed). Never added "
-            "twice; to remove it, pass the body with the signature deleted "
-            "and false. A preserved body is left exactly as it was."
+            "Only valid together with body (rejected otherwise). Add the "
+            "account's signature to the new body? In mode 'ask' (the "
+            "default) pass the same choice the user made for this draft — "
+            "omitting it is rejected with SIGNATURE_CHOICE_REQUIRED; mode "
+            "'auto' defaults to true. Not added twice if the body already "
+            "ends with it; to remove it, pass the body with the signature "
+            "deleted and false. A preserved body is left exactly as it was."
         ),
     )
     preserve_message_id: bool = Field(

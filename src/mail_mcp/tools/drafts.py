@@ -14,7 +14,7 @@ from ..config import AccountModel, Config
 from ..credentials import resolve_auth
 from ..safety.attachments import resolve_many
 from ..safety.validation import ValidationError
-from ..signatures import load_signature, sign_body, signature_in
+from ..signatures import sign_body
 from .schemas import (
     ForwardDraftInput,
     ReplyDraftInput,
@@ -24,9 +24,10 @@ from .schemas import (
 )
 
 _SIGNATURE_STILL_PRESENT_NOTE = (
-    "include_signature=false, but the body you passed already contains the "
-    "account signature, so the message still carries it. Remove it from "
-    "body/body_html if it must go without a signature."
+    "include_signature=false: mail-mcp did not add the signature, but the body "
+    "you passed already contains the account's signature text (possibly inside "
+    "quoted material). Remove it from your own text if the message must go "
+    "without it."
 )
 
 
@@ -234,21 +235,11 @@ def update_draft(cfg: Config, params: UpdateDraftInput) -> dict:
             # A replaced body is a freshly written message: sign it like
             # save_draft would (idempotent, so a body read back from a signed
             # draft is not signed twice). A preserved body is left untouched.
-            include = params.include_signature
-            if include is None and acct.signature_mode == "ask":
-                # Editing is not a new decision: keep what the draft had. A
-                # draft that carried the signature keeps it; one that did not
-                # stays unsigned — no question asked on every edit.
-                sig = load_signature(cfg, acct)
-                if sig is not None:
-                    orig_plain = original.get_body(preferencelist=("plain",))
-                    orig_html = original.get_body(preferencelist=("html",))
-                    include = signature_in(
-                        sig,
-                        imap_client._safe_get_content(orig_plain) if orig_plain is not None else "",
-                        imap_client._safe_get_content(orig_html) if orig_html is not None else None,
-                    )
-            signed = sign_body(cfg, acct, include, params.body, params.body_html)
+            # In "ask" mode an undecided replacement is rejected like any other
+            # write: the decision is the user's, never inferred from the old
+            # draft (its content cannot tell a declined signature from one
+            # inside quoted text). The agent passes the choice the user made.
+            signed = sign_body(cfg, acct, params.include_signature, params.body, params.body_html)
             new_body, new_body_html = signed.text, signed.html
             signature_status = signed.status
         else:
