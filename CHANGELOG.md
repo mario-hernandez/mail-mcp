@@ -30,6 +30,15 @@ _No unreleased changes yet._
   connecting to the server and before `send_email`'s hourly rate limit, so an
   undecided call costs nothing.
 
+### Known limitations
+- The decision is structural (never inferred), but *placement* after an
+  explicit yes relies on recognising quoted material. In a plain-text body
+  that pastes a whole email thread, recognition is best-effort (client
+  separators, Outlook header blocks tied to the owner's address, a deeper
+  separator proving a thread); an exotic paste can place the signature or skip
+  a duplicate imperfectly. HTML bodies use the clients' own quote markers.
+  Review drafts before sending, as always.
+
 ### Added
 - `get_account_info` → `signature.mode` and the `doctor` signature line tell
   the agent whether it must ask. Tool descriptions and the server's handshake
