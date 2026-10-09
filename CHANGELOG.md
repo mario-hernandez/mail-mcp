@@ -7,7 +7,14 @@ minor bump and are called out explicitly.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+- **`search_emails` and `list_drafts` now decode RFC 2047 subjects and sender
+  names.** IMAP ENVELOPE returns header values as they sit in the message, so
+  encoded-words reached the listing raw — a subject like "Acta de la
+  reunión" showed up as `Acta de la =?utf-8?q?reuni=C3=B3n?=`. They are now
+  decoded with the same policy `get_email` uses (folded lines and mixed
+  charsets included); a malformed header falls back to the raw text instead of
+  failing the listing, and `sanitize_header` still neutralises CR/LF afterwards.
 
 ## [0.7.0] — 2026-09-25
 

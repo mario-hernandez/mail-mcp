@@ -454,7 +454,7 @@ def search(
             continue
         env = item.get(b"ENVELOPE")
         flags = [f.decode(errors="replace") for f in item.get(b"FLAGS", ())]
-        subject_val = _decode(env.subject) if env and env.subject else ""
+        subject_val = _decode_mime_header(env.subject) if env and env.subject else ""
         from_val = _format_address(env.from_[0]) if env and env.from_ else ""
         # Filter out the empties that _format_address returns for RFC 3501
         # address-group markers, so the LLM never sees a bogus/blank recipient.
@@ -736,7 +736,7 @@ def fetch_headers(
             continue
         env = item.get(b"ENVELOPE")
         flags = [f.decode(errors="replace") for f in item.get(b"FLAGS", ())]
-        subject_val = _decode(env.subject) if env and env.subject else ""
+        subject_val = _decode_mime_header(env.subject) if env and env.subject else ""
         from_val = _format_address(env.from_[0]) if env and env.from_ else ""
         # Filter out the empties that _format_address returns for RFC 3501
         # address-group markers, so the LLM never sees a bogus/blank recipient.
@@ -944,6 +944,31 @@ def _decode(value: Any) -> str:
     return str(value) if value is not None else ""
 
 
+# RFC 5322 unfolding: a line break followed by whitespace is a fold, not text.
+_HEADER_FOLD = re.compile(r"\r?\n(?=[ \t])")
+_HEADER_POLICY = email.policy.default
+
+
+def _decode_mime_header(value: Any) -> str:
+    """Decode an ENVELOPE text field (subject, display name) to readable text.
+
+    IMAP ENVELOPE returns header values exactly as they sit in the message, so
+    RFC 2047 encoded-words arrive undecoded: a subject mixing plain text and an
+    accented word showed up as ``Acta de la =?utf-8?q?reuni=C3=B3n?=``.
+    Decode with the same policy ``get_email`` uses, so listings show what a
+    mail client shows. Malformed input falls back to the raw text: a listing
+    must never fail because of one bad header. CR/LF and length are neutralised
+    later by ``sanitize_header`` before anything reaches the LLM.
+    """
+    text = _decode(value)
+    if "=?" not in text:
+        return text
+    try:
+        return str(_HEADER_POLICY.header_factory("subject", _HEADER_FOLD.sub("", text)))
+    except Exception:  # noqa: BLE001 — degrade to the raw header, never fail the listing
+        return text
+
+
 def _header_addresses(raw: str) -> list[str]:
     """Split an address header into bare addresses, comma-in-display-name safe.
 
@@ -966,7 +991,7 @@ def _format_address(addr: Any) -> str:
         return ""
     mailbox = _decode(addr.mailbox) if addr.mailbox else ""
     host = _decode(addr.host)
-    name = _decode(addr.name) if addr.name else ""
+    name = _decode_mime_header(addr.name) if addr.name else ""
     email_repr = f"{mailbox}@{host}" if mailbox and host else mailbox or host
     return f"{name} <{email_repr}>".strip() if name else email_repr
 
